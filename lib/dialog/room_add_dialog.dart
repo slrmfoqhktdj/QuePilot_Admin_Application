@@ -10,6 +10,57 @@ class AddRoomDialog extends StatefulWidget {
     required this.onRoomAdded,
   }) : super(key: key);
 
+  static Future<void> showDraggable(
+    BuildContext context, {
+    required Function() onRoomAdded,
+  }) {
+    return _showDraggableDialog(
+      context,
+      AddRoomDialog(onRoomAdded: onRoomAdded),
+    );
+  }
+
+  static Future<void> _showDraggableDialog(BuildContext context, Widget dialog) {
+    Offset dialogOffset = Offset.zero;
+
+    return showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'dialog',
+      barrierColor: Colors.black54,
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Stack(
+              children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    behavior: HitTestBehavior.translucent,
+                    child: Container(color: Colors.transparent),
+                  ),
+                ),
+                Center(
+                  child: Transform.translate(
+                    offset: dialogOffset,
+                    child: GestureDetector(
+                      onPanUpdate: (details) {
+                        setDialogState(() {
+                          dialogOffset += details.delta;
+                        });
+                      },
+                      child: dialog,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   State<AddRoomDialog> createState() => _AddRoomDialogState();
 }

@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:que_pilot_admin_01/screens/setting_screen.dart';
+import 'package:window_manager/window_manager.dart';
+import '../db/model/hive_key_model.dart';
+import '../utils/navigation.dart';
+import 'login_screen.dart';
 import 'timeline_list_screen.dart';
 import 'user_list_screen.dart';
 import '../services/socket_service.dart';
@@ -19,23 +23,37 @@ class _CentralControlScreenState extends State<CentralControlScreen> {
   bool _isConnected = false;
   String _statusMessage = '서버 탐색 중...';
 
-  final double _leftSideBarWidth = 200;
-
   int _selectedMenuIndex = 0;
-  String? _currentProjectId;
-  String? _currentRoomId;
+  int? _hoveredMenuIndex;
 
-  final List<MenuItem> _menuItems = [
-    MenuItem(icon: Icons.dashboard, title: '대시보드', route: 'dashboard'),
+  // ★ 일반 사용자는 '사용자 관리' 메뉴 숨김
+  List<MenuItem> get _menuItems => [
     MenuItem(icon: Icons.folder, title: '프로젝트', route: 'projects'),
-    MenuItem(icon: Icons.people, title: '사용자 관리', route: 'users'),
+    if (socketService.isAdminUser)
+      MenuItem(icon: Icons.people, title: '사용자 관리', route: 'users'),
     MenuItem(icon: Icons.settings, title: '설정', route: 'settings'),
+  ];
+
+  List<Widget> get _screens => [
+    const TimelineListScreen(),
+    if (socketService.isAdminUser) const UserListScreen(),
+    const SettingScreen(),
   ];
 
   @override
   void initState() {
     super.initState();
+    socketService.onSessionExpired = _onSessionExpired;
     _connectToServer();
+  }
+
+  // ★ 인증 만료 시 로그인 화면 복귀
+  void _onSessionExpired() {
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      fadeRoute(const LoginScreen()),
+      (route) => false,
+    );
   }
 
   // ═══════════════════════════════════════════
@@ -50,39 +68,74 @@ class _CentralControlScreenState extends State<CentralControlScreen> {
     });
 
     // 1차: 마지막 접속했던 서버로 빠른 연결 시도
-    final lastUrl = socketService.hiveService.sessionRead('lastServerUrl', null);
+    final lastUrl = socketService.hiveService.sessionRead(HiveKeyModel().lastURL, null);
     if (lastUrl != null) {
       setState(() { _statusMessage = '이전 서버에 연결 시도 중...'; });
       socketService.serverUrl = lastUrl;
       socketService.connectToMainServer();
 
-      await Future.delayed(const Duration(seconds: 3));
-      if (socketService.isMainConnected) {
+      for (int i = 0; i < 10; i++) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (!mounted) return;
+        if (socketService.isMainConnected) {
+          _onConnected('연결됨: $lastUrl');
+          return;
+        }
+      }
+
+      // 실패 시 기존 소켓 정리 (새 연결 루프를 위해)
+      socketService.disconnect();
+    }
+
+    // 2차: 브로드캐스트 자동 탐색
+    // 서버 부팅 중이면 재탐색, 라이선스 인증 전이면 연결 대기까지 자동 처리
+    int discoveryRetries = 0;
+    while (mounted) {
+      setState(() { _statusMessage = '내부망에서 서버 탐색 중...'; });
+
+      final found = await socketService.autoConnect();
+      if (!mounted) return;
+
+      if (found) {
+        // 서버는 찾았지만 아직 연결 전 → 소켓이 무한 재연결 중이므로 대기
+        setState(() {
+          _isSearching = true;
+          _statusMessage = '서버 연결 대기 중...\n(라이선스 인증이 완료되면 자동 연결됩니다)';
+        });
+
+        while (mounted) {
+          for (int i = 0; i < 5; i++) {
+            await Future.delayed(const Duration(seconds: 1));
+            if (!mounted) return;
+            if (socketService.isMainConnected) {
+              _onConnected('서버 연결됨: ${socketService.serverUrl}');
+              return;
+            }
+          }
+        }
+        return;
+      }
+
+      discoveryRetries++;
+      if (discoveryRetries >= 6) {
         setState(() {
           _isSearching = false;
-          _isConnected = true;
-          _statusMessage = '연결됨: $lastUrl';
+          _isConnected = false;
+          _statusMessage = '서버를 찾지 못했습니다';
         });
         return;
       }
 
-      // 실패 시 기존 소켓 정리
-      socketService.disconnect();
+      setState(() { _statusMessage = '서버를 찾지 못했습니다. 재탐색 중... ($discoveryRetries/6)'; });
+      await Future.delayed(const Duration(seconds: 5));
     }
+  }
 
-    // 2차: 브로드캐스트로 서버 자동 탐색
-    setState(() { _statusMessage = '내부망에서 서버 탐색 중...'; });
-
-    final found = await socketService.autoConnect();
-
-    if (!mounted) return;
-
+  void _onConnected(String message) {
     setState(() {
       _isSearching = false;
-      _isConnected = found;
-      _statusMessage = found
-          ? '서버 연결됨: ${socketService.serverUrl}'
-          : '서버를 찾지 못했습니다';
+      _isConnected = true;
+      _statusMessage = message;
     });
   }
 
@@ -96,21 +149,6 @@ class _CentralControlScreenState extends State<CentralControlScreen> {
     });
   }
 
-  Widget _buildCurrentScreen() {
-    switch (_menuItems[_selectedMenuIndex].route) {
-      case 'dashboard':
-        return _buildDashboard();
-      case 'projects':
-        return const TimelineListScreen();
-      case 'users':
-        return const UserListScreen();
-      case 'settings':
-        return const SettingScreen();
-      default:
-        return const Center(child: Text('Unknown Screen'));
-    }
-  }
-
   // ═══════════════════════════════════════════
   // 서버 탐색 화면 (연결 전)
   // ═══════════════════════════════════════════
@@ -118,81 +156,60 @@ class _CentralControlScreenState extends State<CentralControlScreen> {
   Widget _buildDiscoveryScreen() {
     return Scaffold(
       backgroundColor: Colors.grey[900],
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // 로고
-            Icon(
-              Icons.control_camera,
-              size: 80,
-              color: Colors.blue[400],
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'QuePilot',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 48),
-
-            // 상태 표시
-            if (_isSearching) ...[
-              const SizedBox(
-                width: 48,
-                height: 48,
-                child: CircularProgressIndicator(color: Colors.blue),
-              ),
-            ] else ...[
-              Icon(
-                _isConnected ? Icons.check_circle : Icons.error_outline,
-                size: 48,
-                color: _isConnected ? Colors.green : Colors.red,
-              ),
-            ],
-            const SizedBox(height: 24),
-
-            Text(
-              _statusMessage,
-              style: TextStyle(
-                color: Colors.grey[300],
-                fontSize: 16,
-              ),
-              textAlign: TextAlign.center,
-            ),
-
-            // 재시도 버튼 (탐색 실패 시)
-            if (!_isSearching && !_isConnected) ...[
-              const SizedBox(height: 32),
-              ElevatedButton.icon(
-                onPressed: _connectToServer,
-                icon: const Icon(Icons.refresh),
-                label: const Text('다시 탐색'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue.shade700,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 32,
-                    vertical: 14,
+      body: Column(
+        children: [
+          // 커스텀 타이틀바 (연결 전)
+          _buildTitleBar(),
+          Container(height: 1, color: Colors.grey[800]),
+          // 탐색 콘텐츠
+          Expanded(
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.control_camera, size: 80, color: Colors.blue[400]),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'QuePilot',
+                    style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
                   ),
-                ),
+                  const SizedBox(height: 48),
+                  if (_isSearching) ...[
+                    const SizedBox(
+                      width: 48, height: 48,
+                      child: CircularProgressIndicator(color: Colors.blue),
+                    ),
+                  ] else ...[
+                    Icon(
+                      _isConnected ? Icons.check_circle : Icons.error_outline,
+                      size: 48,
+                      color: _isConnected ? Colors.green : Colors.red,
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  Text(
+                    _statusMessage,
+                    style: TextStyle(color: Colors.grey[300], fontSize: 16),
+                    textAlign: TextAlign.center,
+                  ),
+                  if (!_isSearching && !_isConnected) ...[
+                    const SizedBox(height: 32),
+                    ElevatedButton.icon(
+                      onPressed: _connectToServer,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('다시 탐색'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue.shade700,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                      ),
+                    ),
+                  ],
+                ],
               ),
-              const SizedBox(height: 16),
-
-              // 수동 입력 버튼
-              // TextButton(
-              //   onPressed: _showManualInputDialog,
-              //   child: Text(
-              //     '서버 주소 직접 입력',
-              //     style: TextStyle(color: Colors.grey[400]),
-              //   ),
-              // ),
-            ],
-          ],
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -281,113 +298,6 @@ class _CentralControlScreenState extends State<CentralControlScreen> {
   // }
 
   // ═══════════════════════════════════════════
-  // 대시보드
-  // ═══════════════════════════════════════════
-
-  Widget _buildDashboard() {
-    return Scaffold(
-      appBar: AppBar(
-        title: Container(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          child: const Row(
-            children: [
-              Icon(Icons.dashboard, color: Colors.white),
-              SizedBox(width: 12),
-              Text(
-                '중앙 제어 대시보드',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
-        backgroundColor: Colors.grey[900],
-      ),
-      body: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: GridView.count(
-                crossAxisCount: 3,
-                crossAxisSpacing: 16,
-                mainAxisSpacing: 16,
-                children: [
-                  _buildDashboardCard(
-                    icon: Icons.folder,
-                    title: '프로젝트',
-                    subtitle: _currentProjectId ?? '선택 안됨',
-                    color: Colors.blue,
-                    onTap: () => _onMenuSelected(1),
-                  ),
-                  _buildDashboardCard(
-                    icon: Icons.people,
-                    title: '사용자',
-                    subtitle: '관리',
-                    color: Colors.purple,
-                    onTap: () => _onMenuSelected(2),
-                  ),
-                  _buildDashboardCard(
-                    icon: Icons.settings,
-                    title: '설정',
-                    subtitle: '시스템',
-                    color: Colors.grey,
-                    onTap: () => _onMenuSelected(3),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-      backgroundColor: Colors.grey[900],
-    );
-  }
-
-  Widget _buildDashboardCard({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return Card(
-      color: Colors.grey[850],
-      elevation: 4,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 64, color: color),
-              const SizedBox(height: 16),
-              Text(
-                title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                subtitle,
-                style: TextStyle(color: Colors.grey[400], fontSize: 14),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ═══════════════════════════════════════════
   // 메인 빌드
   // ═══════════════════════════════════════════
 
@@ -398,106 +308,20 @@ class _CentralControlScreenState extends State<CentralControlScreen> {
       return _buildDiscoveryScreen();
     }
 
-    // ★ 연결 후 메인 화면
+    // ★ 연결 후 메인 화면 (커스텀 타이틀바 + 콘텐츠)
     return Scaffold(
-      body: Row(
+      backgroundColor: Colors.grey[900],
+      body: Column(
         children: [
-          // 왼쪽 사이드바
-          Container(
-            width: _leftSideBarWidth,
-            color: Colors.grey[900],
-            child: Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(24),
-                  child: Row(
-                    children: [
-                      Icon(Icons.control_camera, size: 32, color: Colors.blue[400]),
-                      const SizedBox(width: 12),
-                      const Text(
-                        '중앙 제어',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(color: Colors.grey, height: 1),
-
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: _menuItems.length,
-                    itemBuilder: (context, index) {
-                      final item = _menuItems[index];
-                      final isSelected = _selectedMenuIndex == index;
-
-                      return ListTile(
-                        leading: Icon(
-                          item.icon,
-                          color: isSelected ? Colors.blue[400] : Colors.grey[400],
-                        ),
-                        title: Text(
-                          item.title,
-                          style: TextStyle(
-                            color: isSelected ? Colors.white : Colors.grey[400],
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                          ),
-                        ),
-                        selected: isSelected,
-                        selectedTileColor: Colors.blue.withValues(alpha: 0.1),
-                        onTap: () => _onMenuSelected(index),
-                      );
-                    },
-                  ),
-                ),
-
-                // 하단 서버 연결 상태
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 10,
-                            height: 10,
-                            decoration: BoxDecoration(
-                              color: socketService.isMainConnected
-                                  ? Colors.green
-                                  : Colors.red,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              socketService.isMainConnected ? '연결됨' : '연결 끊김',
-                              style: TextStyle(color: Colors.grey[400], fontSize: 12),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'v1.0.0',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 10),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          Container(width: 1, color: Colors.grey[800]),
-
+          // 커스텀 타이틀바
+          _buildTitleBar(),
+          // 구분선
+          Container(height: 1, color: Colors.grey[800]),
+          // 콘텐츠
           Expanded(
-            child: Container(
-              color: Colors.grey[900],
-              child: _buildCurrentScreen(),
+            child: IndexedStack(
+              index: _selectedMenuIndex,
+              children: _screens,
             ),
           ),
         ],
@@ -505,8 +329,129 @@ class _CentralControlScreenState extends State<CentralControlScreen> {
     );
   }
 
+  // ═══════════════════════════════════════════
+  // 커스텀 타이틀바
+  // ═══════════════════════════════════════════
+
+  Widget _buildTitleBar() {
+    return Container(
+      height: 40,
+      color: Colors.grey[900],
+      child: Row(
+        children: [
+          // 드래그 가능 영역
+          Expanded(
+            child: DragToMoveArea(
+              child: Row(
+                children: [
+                  const SizedBox(width: 12),
+                  // 메뉴 탭
+                  ...List.generate(_menuItems.length, (index) {
+                    final item = _menuItems[index];
+                    final isSelected = _selectedMenuIndex == index;
+                    final isHovered = _hoveredMenuIndex == index;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: MouseRegion(
+                        onEnter: (_) => setState(() => _hoveredMenuIndex = index),
+                        onExit: (_) => setState(() => _hoveredMenuIndex = null),
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: () => _onMenuSelected(index),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? Colors.blue.withValues(alpha: 0.3)
+                                  : isHovered
+                                      ? Colors.blue.withValues(alpha: 0.15)
+                                      : Colors.transparent,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(item.icon, size: 14, color: isSelected ? Colors.white : Colors.grey[400]),
+                                const SizedBox(width: 4),
+                                Text(item.title, style: TextStyle(color: isSelected ? Colors.white : Colors.grey[400], fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                  const Spacer(),
+                  // 연결 상태
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: socketService.isMainConnected ? Colors.green : Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    socketService.isMainConnected ? '연결됨' : '연결 끊김',
+                    style: TextStyle(color: Colors.grey[400], fontSize: 11),
+                  ),
+                  const SizedBox(width: 12),
+                  Text('v1.0.0', style: TextStyle(color: Colors.grey[600], fontSize: 10)),
+                  const SizedBox(width: 8),
+                ],
+              ),
+            ),
+          ),
+          // 창 컨트롤 버튼 (DragToMoveArea 바깥)
+          _buildWindowButton(Icons.minimize, () => windowManager.minimize(), tooltip: '최소화'),
+          _buildWindowButton(Icons.crop_square, () async {
+            final isMaximized = await windowManager.isMaximized();
+            if (isMaximized) {
+              windowManager.unmaximize();
+            } else {
+              windowManager.maximize();
+            }
+          }, tooltip: '최대화'),
+          _buildWindowButton(Icons.close, () => windowManager.close(), tooltip: '닫기', isClose: true),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWindowButton(IconData icon, VoidCallback onTap, {String? tooltip, bool isClose = false}) {
+    return StatefulBuilder(
+      builder: (context, setHoverState) {
+        bool isHovered = false;
+        return Tooltip(
+          message: tooltip ?? '',
+          preferBelow: false,
+          waitDuration: const Duration(milliseconds: 400),
+          child: MouseRegion(
+            onEnter: (_) => setHoverState(() => isHovered = true),
+            onExit: (_) => setHoverState(() => isHovered = false),
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: onTap,
+              child: Container(
+                width: 46,
+                height: 40,
+                alignment: Alignment.center,
+                color: isHovered
+                    ? (isClose ? Colors.red.withValues(alpha: 0.3) : Colors.grey[700]!.withValues(alpha: 0.5))
+                    : Colors.transparent,
+                child: Icon(icon, size: 16, color: Colors.grey[400]),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
+    socketService.onSessionExpired = null;
     socketService.disposeAll();
     super.dispose();
   }

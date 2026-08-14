@@ -12,7 +12,6 @@ class TimelineProject {
   // int _fps;
   final int? index;
   final DateTime createdAt;
-  List<Room>? _roomsWithoutTrack;
   List<Room>? _roomsAll;
   TimelineController? _controller;
 
@@ -23,10 +22,9 @@ class TimelineProject {
     // required int fps,
     this.index,
     required this.createdAt,
-    List<Room>? roomsWithoutTrack,
     List<Room>? roomsAll,
     TimelineController? controller,
-  }): _name = name, _duration = duration, _roomsWithoutTrack = roomsWithoutTrack, _roomsAll = roomsAll, _controller = controller;
+  }): _name = name, _duration = duration, _roomsAll = roomsAll, _controller = controller;
 
   String get name => _name;
   set name(String value){
@@ -43,9 +41,14 @@ class TimelineProject {
   //   _fps = value;
   // }
 
-  List<Room> get roomsWithoutTrack => _roomsWithoutTrack ?? [];
-  set roomsWithoutTrack(List<Room> value) {
-    _roomsWithoutTrack = value;
+  // 트랙이 없는 방 + "프로젝트 트랙" 가짜 방 (트랙 상태에서 즉시 계산 — 수동 동기화 불필요)
+  List<Room> get roomsWithoutTrack {
+    final trackIds = (_controller?.timelineData?.tracks ?? const <Track>[])
+        .map((t) => t.room_id)
+        .toSet();
+    final rooms = List<Room>.from(_roomsAll ?? const []);
+    rooms.add(Room(id: id, name: '프로젝트 트랙', createdAt: createdAt));
+    return rooms.where((r) => !trackIds.contains(r.id)).toList();
   }
 
   List<Room> get roomsAll => _roomsAll ?? [];
@@ -90,31 +93,13 @@ class TimelineProject {
 
     }
 
-    List<Room> roomsListForWithoutTrack = List.from(roomsList);
-    roomsListForWithoutTrack.add(new Room(id: json['id'] as String, name: "프로젝트 트랙", createdAt: DateTime.parse(json['created_at'] as String)));
-
-
-    List<Track> tracksList = [];
-    if(json['tracks'] != null){
-      final tracksJson = json['tracks'] as List<dynamic>;
-      tracksList = tracksJson.map((track) => Track.fromJson(track as Map<String, dynamic>)).toList();
-    }
-
-    Set<String> trackIds = tracksList.map((item) => item.room_id).toSet();
-
-    List<Room> returnRoomList = roomsListForWithoutTrack.where((item) => !trackIds.contains(item.id)).toList();
-
-    // print("getProjectList : ${json['name'] as String} : ${hiveservice.projectIndexRead(json['id'], -1)}");
-
-
     return TimelineProject(
       id: json['id'] as String,
       name: json['name'] as String,
       duration: json['duration'] as int,
       // fps: json['fps'] as int,
       index: hiveservice.projectIndexRead(json['id'], -1),
-      createdAt: DateTime.parse(json['created_at'] as String),
-      roomsWithoutTrack: returnRoomList,
+      createdAt: DateTime.parse(json['created_at'] as String).toLocal(),
       roomsAll: roomsList,
       controller: controller,
     );

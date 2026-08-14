@@ -32,6 +32,7 @@ class Track {
     return {
       'id': id,
       'name': name,
+      'room_id': room_id,
       'cues': cues.map((e) => e.toJson()).toList(),
     };
   }

@@ -275,9 +275,9 @@ class _UserAuthDialogState extends State<UserAuthDialog> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.blue.withOpacity(0.1),
+                color: Colors.blue,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                border: Border.all(color: Colors.blue),
               ),
               child: Row(
                 children: [
@@ -311,7 +311,7 @@ class _UserAuthDialogState extends State<UserAuthDialog> {
                 itemCount: projects.length,
                 itemBuilder: (context, index) {
                   final project = projects[index];
-                  final projectId = project['id'];
+                  // final projectId = project['id'];
                   final rooms = projects[index]['rooms'] ?? [];
 
                   return _buildProjectCard(project, List<Map<String, dynamic>>.from(rooms));

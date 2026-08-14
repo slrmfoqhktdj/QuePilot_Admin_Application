@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'db/hive_service.dart';
-import 'screens/central_control_screen.dart';
+import 'screens/login_screen.dart';
 
 import 'permissions/permission_service.dart';
 
@@ -20,7 +20,7 @@ void main() async {
     center: true,                    // 화면 중앙에 표시
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
-    titleBarStyle: TitleBarStyle.normal,
+    titleBarStyle: TitleBarStyle.hidden,
     title: '중앙 컨트롤러',      // 창 제목
   );
 
@@ -66,7 +66,7 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
       ),
       // home: const ProjectListScreen(),
-      home: const CentralControlScreen(),
+      home: const LoginScreen(),
     );
   }
 }

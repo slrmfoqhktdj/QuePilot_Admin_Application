@@ -11,6 +11,7 @@ class WebRTCService {
   MediaStream? _localStream;
   final Map<String, RTCPeerConnection> _peerConnections = {};
   final Map<String, MediaStream> _remoteStreams = {};
+  final Map<String, List<Map<String, dynamic>>> _pendingIceCandidates = {};
 
   Function(String userId, MediaStream stream)? onRemoteStreamAdded;
   Function(String userId)? onRemoteStreamRemoved;
@@ -198,17 +199,17 @@ class WebRTCService {
   void _setupSignalingListeners() {
 
     _subs.add(socketService.webRTCOffer.listen((data) async{
-      print('🔗 [WebRTC] Offer 수신: $data.from');
+      print('🔗 [WebRTC] Offer 수신: ${data.from}');
       await _handleOffer(data.from, data.payload);
     }));
 
     _subs.add(socketService.webRTCAnswer.listen((data) async{
-      print('🔗 [WebRTC] Answer 수신: $data.from');
+      print('🔗 [WebRTC] Answer 수신: ${data.from}');
       await _handleAnswer(data.from, data.payload);
     }));
 
     _subs.add(socketService.webRTCIce.listen((data) async{
-      print('🧊 [WebRTC] ICE Candidate 수신: $data.from');
+      print('🧊 [WebRTC] ICE Candidate 수신: ${data.from}');
       await _handleIceCandidate(data.from, data.payload);
     }));
 
@@ -285,51 +286,16 @@ class WebRTCService {
         }
       };
 
-      // 연결 상태 변화
-      pc.onConnectionState = (RTCPeerConnectionState state) {
-        print('🔗 연결 상태: $peerId -> $state');
-
-        switch (state) {
-          case RTCIceConnectionState.RTCIceConnectionStateNew:
-            print('   🆕 ICE 연결 초기화 중...');
-            break;
-          case RTCIceConnectionState.RTCIceConnectionStateChecking:
-            print('   🔍 ICE 연결 체크 중...');
-            break;
-          case RTCIceConnectionState.RTCIceConnectionStateConnected:
-            print('   ✅ ICE 연결 성공!');
-            break;
-          case RTCIceConnectionState.RTCIceConnectionStateCompleted:
-            print('   ✅ ICE 연결 완료!');
-            break;
-          case RTCIceConnectionState.RTCIceConnectionStateFailed:
-            print('   ❌ ICE 연결 실패!');
-            break;
-          case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
-            print('   ⚠️ ICE 연결 끊김');
-            break;
-          case RTCIceConnectionState.RTCIceConnectionStateClosed:
-            print('   🔒 ICE 연결 닫힘');
-            break;
-          default:
-            print('   ❓ 알 수 없는 상태: $state');
-        }
-      };
-
       // ✅ ICE Gathering 상태
       pc.onIceGatheringState = (RTCIceGatheringState state) {
         print('🧊 ICE Gathering 상태: $peerId -> $state');
       };
 
-      // ✅ 연결 상태 변화
+      // ✅ 연결 상태 변화 (로깅만, PC 정리는 userLeftCall/dispose가 담당)
       pc.onConnectionState = (RTCPeerConnectionState state) {
         print('🔗 연결 상태: $peerId -> $state');
-
-        if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
-            state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-            state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-          print('❌ 연결 종료됨: $peerId');
-          removePeerConnection(peerId);
+        if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          _startStatsDump(peerId);
         }
       };
 
@@ -378,6 +344,9 @@ class WebRTCService {
   Future<void> createOffer(String peerId) async {
     try {
       print('📤 Offer 생성: $peerId');
+      print('🔍 [Admin] PC 존재?: ${_peerConnections.containsKey(peerId)}');
+      print('🔍 [Admin] localStream 있음?: ${_localStream != null}');
+      print('🔍 [Admin] 전체 PC 맵: ${_peerConnections.keys.join(", ")}');
 
       // ✅ 기존 연결 확인
       final existingPc = _peerConnections[peerId];
@@ -436,7 +405,23 @@ class WebRTCService {
     try {
       print('📥 Offer 처리: $peerId');
 
-      final pc = await _createPeerConnection(peerId);
+      if (offerData == null || offerData['sdp'] == null || offerData['type'] == null) {
+        print('❌ Offer 데이터 null: $peerId');
+        return;
+      }
+
+      var pc = _peerConnections[peerId];
+      if (pc != null) {
+        final signalingState = await pc.getSignalingState();
+        if (signalingState == RTCSignalingState.RTCSignalingStateHaveLocalOffer) {
+          print('⚠️ Glare 감지: $peerId — PC 재생성 후 remote offer 수락');
+          await pc.close();
+          _peerConnections.remove(peerId);
+          pc = null;
+        }
+      }
+
+      pc = await _createPeerConnection(peerId);
       if (pc == null) { print('❌ 피어 연결 생성 실패'); return;}
 
       final offer = RTCSessionDescription(offerData['sdp'], offerData['type']);
@@ -444,7 +429,8 @@ class WebRTCService {
       await pc.setRemoteDescription(offer);
       print('✅ Remote Description 설정 완료');
 
-      // ✅ Answer 제약 조건
+      await _flushPendingIceCandidates(peerId);
+
       final answerOptions = {
         'offerToReceiveAudio': true,
         'offerToReceiveVideo': false,
@@ -452,8 +438,6 @@ class WebRTCService {
 
       RTCSessionDescription answer = await pc.createAnswer(answerOptions);
       print('✅ Answer SDP 생성 완료');
-      print('   타입: ${answer.type}');
-      print('   SDP 길이: ${answer.sdp?.length ?? 0} bytes');
 
       await pc.setLocalDescription(answer);
       print('✅ Local Description 설정 완료');
@@ -505,6 +489,8 @@ class WebRTCService {
       await pc.setRemoteDescription(answer);
       print('✅ Remote Description 설정 완료');
 
+      await _flushPendingIceCandidates(peerId);
+
       // ✅ 설정 후 상태 확인
       final newState = await pc.getSignalingState();
       print('   새로운 시그널링 상태: $newState');
@@ -521,7 +507,8 @@ class WebRTCService {
     try {
       final pc = _peerConnections[peerId];
       if (pc == null) {
-        print('⚠️ ICE: 피어 연결 없음 - $peerId');
+        print('⚠️ ICE: 피어 연결 없음 - $peerId (대기열에 추가)');
+        _pendingIceCandidates.putIfAbsent(peerId, () => []).add(candidateData);
         return;
       }
 
@@ -531,10 +518,41 @@ class WebRTCService {
         candidateData['sdpMLineIndex'],
       );
 
-      await pc.addCandidate(candidate);
-      print('✅ ICE Candidate 추가: $peerId');
+      try {
+        await pc.addCandidate(candidate);
+        print('✅ ICE Candidate 추가: $peerId');
+      } catch (e) {
+        print('⚠️ ICE Candidate 추가 실패 (대기열에 추가): $peerId - $e');
+        _pendingIceCandidates.putIfAbsent(peerId, () => []).add(candidateData);
+      }
     } catch (e) {
       print('❌ ICE Candidate 실패: $peerId - $e');
+    }
+  }
+
+  // 🔧 대기 중이던 ICE Candidate 플러시 (setRemoteDescription 후 호출)
+  Future<void> _flushPendingIceCandidates(String peerId) async {
+    final pending = _pendingIceCandidates.remove(peerId);
+    if (pending == null || pending.isEmpty) return;
+
+    final pc = _peerConnections[peerId];
+    if (pc == null) {
+      _pendingIceCandidates[peerId] = pending;
+      return;
+    }
+
+    for (final data in pending) {
+      try {
+        final candidate = RTCIceCandidate(
+          data['candidate'],
+          data['sdpMid'],
+          data['sdpMLineIndex'],
+        );
+        await pc.addCandidate(candidate);
+        print('✅ 대기 중이던 ICE Candidate 추가: $peerId');
+      } catch (e) {
+        print('❌ 대기 중이던 ICE Candidate 추가 실패: $peerId - $e');
+      }
     }
   }
 
@@ -566,6 +584,7 @@ class WebRTCService {
     _peerConnections[peerId]?.close();
     _peerConnections.remove(peerId);
     _remoteStreams.remove(peerId);
+    _pendingIceCandidates.remove(peerId);
     _peerVolumes.remove(peerId);
     _peerMuted.remove(peerId);
     onRemoteStreamRemoved?.call(peerId);
@@ -576,9 +595,59 @@ class WebRTCService {
   MediaStream? getRemoteStream(String peerId) => _remoteStreams[peerId];
   Map<String, MediaStream> get remoteStreams => _remoteStreams;
 
+  // 🔧 진단용 getStats 로그
+  Timer? _statsTimer;
+  int _statsDumpCount = 0;
+
+  void _startStatsDump(String peerId) {
+    _statsTimer?.cancel();
+    _statsDumpCount = 0;
+    _logAudioStats(peerId, '[Admin]');
+    _statsTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+      _statsDumpCount++;
+      await _logAudioStats(peerId, '[Admin]');
+      if (_statsDumpCount >= 10) {
+        timer.cancel();
+      }
+    });
+  }
+
+  Future<void> _logAudioStats(String peerId, String tag) async {
+    final pc = _peerConnections[peerId];
+    if (pc == null) {
+      print('$tag [Stats] 피어 연결 없음: $peerId');
+      return;
+    }
+    try {
+      final reports = await pc.getStats();
+      for (final stat in reports) {
+        final values = stat.values;
+        final mediaType = values['mediaType']?.toString() ?? '';
+        final kind = values['kind']?.toString() ?? '';
+        if (mediaType == 'audio' || kind == 'audio') {
+          final direction = stat.type.contains('inbound')
+              ? '⬇ 수신'
+              : (stat.type.contains('outbound') ? '⬆ 송신' : '?');
+          print('$tag [Stats] $direction audio '
+              'type=${stat.type} '
+              'bytesSent=${values['bytesSent']} '
+              'packetsSent=${values['packetsSent']} '
+              'bytesReceived=${values['bytesReceived']} '
+              'packetsReceived=${values['packetsReceived']} '
+              'audioLevel=${values['audioLevel']} '
+              'totalAudioEnergy=${values['totalAudioEnergy']} '
+              'jitter=${values['jitter']}');
+        }
+      }
+    } catch (e) {
+      print('$tag [Stats] getStats 실패: $peerId - $e');
+    }
+  }
+
   // 🔧 정리
   Future<void> dispose() async {
     print('🧹 WebRTC 정리 시작');
+    _statsTimer?.cancel();
 
     for (var pc in _peerConnections.values) {
       await pc.close();

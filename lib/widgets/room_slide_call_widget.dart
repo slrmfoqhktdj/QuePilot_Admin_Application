@@ -76,9 +76,9 @@ class _RoomSlideCallWidgetState extends State<RoomSlideCallWidget> {
     }));
 
 
-    _subs.add(socketService.userJoinedCall.listen((data) {
+    _subs.add(socketService.userJoinedCall.listen((data) async {
       if (!mounted) return;
-      print('📞 $data.username 통화 참여');
+      print('📞 $data.username 통화 참여 (신규 입장자가 Offer 생성)');
     }));
 
 
@@ -123,6 +123,8 @@ class _RoomSlideCallWidgetState extends State<RoomSlideCallWidget> {
     }
 
     socketService.joinRoomCall(widget.roomId, _isMuted, (success, data) async {
+      print('🔍 [Admin] joinRoomCall 응답: success=$success');
+      print('🔍 [Admin] existingParticipants: ${data['existingParticipants']}');
       if (success) {
         setState(() {
           _isInCall = true;
@@ -131,9 +133,11 @@ class _RoomSlideCallWidgetState extends State<RoomSlideCallWidget> {
         });
 
         final existingPeers = data['existingParticipants'] ?? [];
+        print('🔍 [Admin] connectToExistingPeers 호출 전 (count=${existingPeers.length})');
         if (existingPeers.isNotEmpty) {
           await webrtcService.connectToExistingPeers(existingPeers);
         }
+        print('🔍 [Admin] connectToExistingPeers 호출 후');
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('⚠️ 통화 참여 실패: ${data?['message'] ?? ''}')),
@@ -287,15 +291,16 @@ class _RoomSlideCallWidgetState extends State<RoomSlideCallWidget> {
   // ✅ 참여자별 볼륨 팝업
   // ========================================
   void _showPeerVolumePopup() {
-    final RenderBox renderBox =
-    _peerVolumeKey.currentContext!.findRenderObject() as RenderBox;
+    final ctx = _peerVolumeKey.currentContext;
+    if (ctx == null) return;
+    final RenderBox renderBox = ctx.findRenderObject() as RenderBox;
     final position = renderBox.localToGlobal(Offset.zero);
     final size = renderBox.size;
 
     const double popupWidth = 360;
     // 참여자 수에 따라 높이 동적 계산
     final participants = _callParticipants
-        .where((p) => p['userId'] != socketService.adminId)
+        .where((p) => p['userId'] != socketService.userId)
         .toList();
     final double popupHeight = participants.isEmpty
         ? 140
@@ -308,7 +313,7 @@ class _RoomSlideCallWidgetState extends State<RoomSlideCallWidget> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             final participants = _callParticipants
-                .where((p) => p['userId'] != socketService.adminId)
+                .where((p) => p['userId'] != socketService.userId)
                 .toList();
 
             return Stack(
@@ -336,7 +341,6 @@ class _RoomSlideCallWidgetState extends State<RoomSlideCallWidget> {
                         border: Border.all(color: Colors.grey[700]!),
                       ),
                       child: Column(
-                        mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           // 헤더
@@ -372,122 +376,129 @@ class _RoomSlideCallWidgetState extends State<RoomSlideCallWidget> {
                               ),
                             )
                           else
-                            ...participants.map((participant) {
-                              final peerId = participant['userId'] as String;
-                              final peerName = participant['username'] ??
-                                  participant['userName'] ??
-                                  'Unknown';
-                              final peerVolume = webrtcService.getPeerVolume(peerId);
-                              final isPeerMuted = webrtcService.isPeerMuted(peerId);
-
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
+                            Flexible(
+                              child: SingleChildScrollView(
                                 child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    // 참여자 이름 + 음소거 버튼
-                                    Row(
-                                      children: [
-                                        CircleAvatar(
-                                          radius: 12,
-                                          backgroundColor: isPeerMuted
-                                              ? Colors.red.shade700
-                                              : Colors.green.shade700,
-                                          child: Text(
-                                            peerName[0].toUpperCase(),
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.bold,
+                                  children: participants.map((participant) {
+                                    final peerId = participant['userId'] as String;
+                                    final peerName = participant['username'] ??
+                                        participant['userName'] ??
+                                        'Unknown';
+                                    final peerVolume = webrtcService.getPeerVolume(peerId);
+                                    final isPeerMuted = webrtcService.isPeerMuted(peerId);
+
+                                    return Padding(
+                                      padding: const EdgeInsets.only(bottom: 8),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          // 참여자 이름 + 음소거 버튼
+                                          Row(
+                                            children: [
+                                              CircleAvatar(
+                                                radius: 12,
+                                                backgroundColor: isPeerMuted
+                                                    ? Colors.red.shade700
+                                                    : Colors.green.shade700,
+                                                child: Text(
+                                                  (peerName.isNotEmpty ? peerName[0] : '?')
+                                                      .toUpperCase(),
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  peerName,
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 13,
+                                                  ),
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              // 개별 음소거
+                                              IconButton(
+                                                icon: Icon(
+                                                  isPeerMuted
+                                                      ? Icons.volume_off
+                                                      : Icons.volume_up,
+                                                  color: isPeerMuted
+                                                      ? Colors.red.shade300
+                                                      : Colors.white,
+                                                  size: 18,
+                                                ),
+                                                onPressed: () {
+                                                  webrtcService.togglePeerMute(peerId);
+                                                  setDialogState(() {});
+                                                  setState(() {});
+                                                },
+                                                padding: EdgeInsets.zero,
+                                                constraints: const BoxConstraints(
+                                                  minWidth: 32,
+                                                  minHeight: 32,
+                                                ),
+                                              ),
+                                              // 볼륨 표시
+                                              SizedBox(
+                                                width: 40,
+                                                child: Text(
+                                                  isPeerMuted
+                                                      ? '음소거'
+                                                      : '${(peerVolume * 100).toInt()}%',
+                                                  style: TextStyle(
+                                                    color: isPeerMuted
+                                                        ? Colors.red.shade300
+                                                        : Colors.white70,
+                                                    fontSize: 11,
+                                                  ),
+                                                  textAlign: TextAlign.right,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          // 볼륨 슬라이더
+                                          SliderTheme(
+                                            data: SliderThemeData(
+                                              trackHeight: 3,
+                                              thumbShape: const RoundSliderThumbShape(
+                                                enabledThumbRadius: 6,
+                                              ),
+                                              overlayShape: const RoundSliderOverlayShape(
+                                                overlayRadius: 12,
+                                              ),
+                                              activeTrackColor:
+                                              isPeerMuted ? Colors.grey : Colors.blue,
+                                              inactiveTrackColor: Colors.grey[700],
+                                              thumbColor:
+                                              isPeerMuted ? Colors.grey : Colors.blue,
+                                            ),
+                                            child: Slider(
+                                              value: peerVolume,
+                                              min: 0.0,
+                                              max: 1.0,
+                                              divisions: 20,
+                                              onChanged: isPeerMuted
+                                                  ? null
+                                                  : (value) {
+                                                webrtcService.setPeerVolume(
+                                                    peerId, value);
+                                                setDialogState(() {});
+                                                setState(() {});
+                                              },
                                             ),
                                           ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Expanded(
-                                          child: Text(
-                                            peerName,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 13,
-                                            ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                        // 개별 음소거
-                                        IconButton(
-                                          icon: Icon(
-                                            isPeerMuted
-                                                ? Icons.volume_off
-                                                : Icons.volume_up,
-                                            color: isPeerMuted
-                                                ? Colors.red.shade300
-                                                : Colors.white,
-                                            size: 18,
-                                          ),
-                                          onPressed: () {
-                                            webrtcService.togglePeerMute(peerId);
-                                            setDialogState(() {});
-                                            setState(() {});
-                                          },
-                                          padding: EdgeInsets.zero,
-                                          constraints: const BoxConstraints(
-                                            minWidth: 32,
-                                            minHeight: 32,
-                                          ),
-                                        ),
-                                        // 볼륨 표시
-                                        SizedBox(
-                                          width: 40,
-                                          child: Text(
-                                            isPeerMuted
-                                                ? '음소거'
-                                                : '${(peerVolume * 100).toInt()}%',
-                                            style: TextStyle(
-                                              color: isPeerMuted
-                                                  ? Colors.red.shade300
-                                                  : Colors.white70,
-                                              fontSize: 11,
-                                            ),
-                                            textAlign: TextAlign.right,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    // 볼륨 슬라이더
-                                    SliderTheme(
-                                      data: SliderThemeData(
-                                        trackHeight: 3,
-                                        thumbShape: const RoundSliderThumbShape(
-                                          enabledThumbRadius: 6,
-                                        ),
-                                        overlayShape: const RoundSliderOverlayShape(
-                                          overlayRadius: 12,
-                                        ),
-                                        activeTrackColor:
-                                        isPeerMuted ? Colors.grey : Colors.blue,
-                                        inactiveTrackColor: Colors.grey[700],
-                                        thumbColor:
-                                        isPeerMuted ? Colors.grey : Colors.blue,
+                                        ],
                                       ),
-                                      child: Slider(
-                                        value: peerVolume,
-                                        min: 0.0,
-                                        max: 1.0,
-                                        divisions: 20,
-                                        onChanged: isPeerMuted
-                                            ? null
-                                            : (value) {
-                                          webrtcService.setPeerVolume(
-                                              peerId, value);
-                                          setDialogState(() {});
-                                          setState(() {});
-                                        },
-                                      ),
-                                    ),
-                                  ],
+                                    );
+                                  }).toList(),
                                 ),
-                              );
-                            }).toList(),
+                              ),
+                            ),
                         ],
                       ),
                     ),
@@ -561,27 +572,23 @@ class _RoomSlideCallWidgetState extends State<RoomSlideCallWidget> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // ✅ 통화 시작/참여 버튼 (항상 표시)
-        _buildCallButton(),
-
-        // ✅ 통화 중일 때 나머지 UI (Expanded로 감싸서 밀림 방지)
+        // ✅ 통화 중일 때 헤더 + 멤버 칩 (컴팩트 스트립, 제한 높이)
         if (_isInCall)
-          Expanded(
-            child: Column(
-              children: [
-                // 통화 상태 헤더
-                _buildCallHeader(),
+          Column(
+            children: [
+              // 멤버 칩 (스크롤 가능, 최대 높이 제한)
+              if (widget.joinedMembers.isNotEmpty)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 120),
+                  child: _buildMemberChips(),
+                ),
 
-                // 멤버 칩 (스크롤 가능)
-                if (widget.joinedMembers.isNotEmpty)
-                  Expanded(child: _buildMemberChips()),
-              ],
-            ),
+              _buildCallHeader(),
+            ],
           ),
 
-        // 통화 안 할 때 멤버만 표시
-        if (!_isInCall && widget.joinedMembers.isNotEmpty)
-          Expanded(child: _buildMemberChips()),
+        // ✅ 통화 시작/참여 버튼 (항상 표시)
+        _buildCallButton(),
       ],
     );
   }

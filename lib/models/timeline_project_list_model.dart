@@ -19,7 +19,7 @@ class ProjectData {
       duration: (json['duration'] as num).toDouble(),
       fps: json['fps'] as int,
       projectId: json['id'] as String,
-      createdAt: DateTime.parse(json['created_at'] as String),
+      createdAt: DateTime.parse(json['created_at'] as String).toLocal(),
     );
   }
 

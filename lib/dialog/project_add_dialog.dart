@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/socket_service.dart';
+import '../utils/text_formatters.dart';
 
 class AddProjectDialog extends StatefulWidget {
   final Function(Map<String, dynamic> projectList) onProjectAdded;
@@ -9,6 +10,57 @@ class AddProjectDialog extends StatefulWidget {
     Key? key,
     required this.onProjectAdded,
   }) : super(key: key);
+
+  static Future<void> showDraggable(
+    BuildContext context, {
+    required Function(Map<String, dynamic> projectList) onProjectAdded,
+  }) {
+    return _showDraggableDialog(
+      context,
+      AddProjectDialog(onProjectAdded: onProjectAdded),
+    );
+  }
+
+  static Future<void> _showDraggableDialog(BuildContext context, Widget dialog) {
+    Offset dialogOffset = Offset.zero;
+
+    return showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'dialog',
+      barrierColor: Colors.black54,
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Stack(
+              children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    behavior: HitTestBehavior.translucent,
+                    child: Container(color: Colors.transparent),
+                  ),
+                ),
+                Center(
+                  child: Transform.translate(
+                    offset: dialogOffset,
+                    child: GestureDetector(
+                      onPanUpdate: (details) {
+                        setDialogState(() {
+                          dialogOffset += details.delta;
+                        });
+                      },
+                      child: dialog,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
 
   @override
   State<AddProjectDialog> createState() => _AddProjectDialogState();
@@ -19,7 +71,7 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
   final socketService = SocketService();
 
   final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _durationController = TextEditingController(text: '120');
+  final TextEditingController _durationController = TextEditingController(text: '2');
   // final TextEditingController _fpsController = TextEditingController(text: '30');
 
   bool _isCreating = false;
@@ -43,7 +95,7 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
       _isCreating = true;
     });
 
-    socketService.createProject(_nameController.text.trim(),int.parse(_durationController.text), (success , projectList) {
+    socketService.createProject(_nameController.text.trim(),int.parse(_durationController.text) * 3600, (success , projectList) {
       if (mounted) {
         setState(() {
           _isCreating = false;
@@ -87,6 +139,7 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.label),
                 ),
+                inputFormatters: noOuterWhitespace,
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
                     return '프로젝트 이름을 입력하세요';
@@ -100,11 +153,11 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
               TextFormField(
                 controller: _durationController,
                 decoration: const InputDecoration(
-                  labelText: 'Duration (초)',
-                  hintText: '120',
+                  labelText: 'Duration (시간)',
+                  hintText: '5',
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.timer),
-                  suffixText: '초',
+                  suffixText: '시간',
                 ),
                 keyboardType: TextInputType.number,
                 inputFormatters: [
@@ -118,8 +171,8 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
                   if (duration == null || duration <= 0) {
                     return '유효한 숫자를 입력하세요 (1 이상)';
                   }
-                  if (duration > 3600) {
-                    return 'Duration은 3600초를 초과할 수 없습니다';
+                  if (duration > 8) {
+                    return 'Duration은 8시간을 초과할 수 없습니다';
                   }
                   return null;
                 },

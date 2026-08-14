@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:que_pilot_admin_01/db/hive_service.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:flutter/foundation.dart';
@@ -23,21 +25,33 @@ class SocketService {
   // String serverUrl = 'http://quepilot.local';
   String serverUrl = 'http://192.168.0.7:8888';
   String socketIoPath = '/api';
-  String? currentProjectId;
-  String? currentRoomId;
-  String? currentUsername;
+  // String? currentProjectId;
+  // String? currentRoomId;
+  // String? currentUsername;
   String type = 'admin';
   String name = 'admin';
+
+  // ★ 현재 세션 역할: 관리자(라이선스 계정) 여부
+  bool get isAdminUser => type == 'admin';
+
+  // ★ 자동 로그인(세션 재사용) 시 인증 거부 감지용
+  bool _autoLoginExpired = false;
+  bool get autoLoginExpired => _autoLoginExpired;
+  void resetAutoLoginState() => _autoLoginExpired = false;
   int _reconnectionDelay = 2000; // 소켓 재연결 딜레이 ms
   int _reconnectionDelayMax = 10000; // 소켓 재연결 딜레이 맥스 ms
-  int _reconnectionAttempts = 10; // 소켓 재연결 재시도 횟수
+  double _reconnectionAttempts = double.infinity; // 무한 재연결 (라이선스 인증 대기/서버 재시작 대응)
   String? _adminId;
   String? _sessionCookie;
+  String? _userId;
 
   bool _isMainConnecting = false; // 연결시도중 여부
 
   bool _isDiscovering = false;  // 서버 주소 찾기 여부
   StreamSubscription? _discoverySub;
+
+  // ★ 세션 만료 시 로그인 화면 복귀용 콜백
+  Function()? onSessionExpired;
 
 
   IO.Socket? get mainSocket => _mainSocket!;
@@ -47,8 +61,15 @@ class SocketService {
   bool get isMainConnected => _mainSocket?.connected ?? false;
   bool get isMainConnecting => _isMainConnecting;
 
-  String get adminId => _adminId!;
-  String get adminName => name;
+  String get adminId => _adminId ?? '';
+  String get adminName => displayName;
+  String? get userId => _userId;
+
+  // ★ 관리자 표시 이름: 설정에 저장된 표시 이름 우선, 없으면 '관리자'
+  String get displayName {
+    final saved = _hiveService.readDisplayName();
+    return saved.isNotEmpty ? saved : '관리자';
+  }
 
   HiveService get hiveService => _hiveService;
 
@@ -92,6 +113,10 @@ class SocketService {
   Stream<TrackEvent> get trackAdded => _trackAdded.stream;
   Stream<TrackEvent> get trackUpdated => _trackUpdated.stream;
   Stream<TrackDeletedEvent> get trackDeleted => _trackDeleted.stream;
+
+  // -- 메인: 내 방 권한 갱신 (permissions-updated) --
+  final _roomAuthUpdated = StreamController<void>.broadcast();
+  Stream<void> get roomAuthUpdated => _roomAuthUpdated.stream;
 
   // -- 프로젝트: 유저 입퇴장 --
   final _userJoined = StreamController<RoomUserEvent>.broadcast();
@@ -202,6 +227,9 @@ class SocketService {
     });
     _mainSocket!.on('track-deleted', (data) {
       _trackDeleted.add(TrackDeletedEvent.fromJson(Map<String, dynamic>.from(data)));
+    });
+    _mainSocket!.on('permissions-updated', (data) {
+      _roomAuthUpdated.add(null);
     });
   }
 
@@ -395,22 +423,20 @@ class SocketService {
           .setPath(socketIoPath)
           .setAuth({'type': type});
 
-      if (_sessionCookie != null) {
+      if (_sessionCookie != null && _sessionCookie!.isNotEmpty) {
         builder.setExtraHeaders({'Cookie': _sessionCookie!});
       }
 
       _mainSocket = IO.io(serverUrl, builder.build());
 
-      _mainSocket!.on('session-created', (data) {
-        print('✅ 세션 생성됨: $data');
-        final adminId = data['adminId'];
-        if (adminId != null) _adminId = adminId;
-        final signedCookie = data['signedCookie'] as String?;
-        if (signedCookie != null) {
-          _sessionCookie = signedCookie;
-          _hiveService.sessionSave(HiveKeyModel().sessionCookieKey, signedCookie);
-          print('💾 세션 쿠키 저장됨: $_sessionCookie');
-        }
+      // ★ 인증 만료/실패 → 세션 초기화 후 로그인 화면 복귀
+      _mainSocket!.on('auth-expired', (data) {
+        print('⛔ 인증 만료 — 로그인 화면으로 복귀: $data');
+        _isMainConnecting = false;
+        _autoLoginExpired = true;
+        _sessionCookie = null;
+        _hiveService.sessionDelete(HiveKeyModel().sessionCookieKey);
+        onSessionExpired?.call();
       });
 
       _mainSocket!.onConnect((_) {
@@ -446,7 +472,12 @@ class SocketService {
 
       _mainSocket!.onReconnectFailed((_) {
         _isMainConnecting = false;
-        print('💀💀💀 재연결 최종 실패 — 더 이상 시도 안 함');
+        print('💀💀💀 재연결 최종 실패 — 5초 후 자동 재시도');
+        Timer(const Duration(seconds: 5), () {
+          if (_mainSocket != null && !_mainSocket!.connected) {
+            connectToMainServer();
+          }
+        });
       });
 
       // ★ 소켓 내부 이벤트 전부 모니터링
@@ -464,12 +495,150 @@ class SocketService {
     }
   }
 
+  // ═══════════════════════════════════════════
+  // HTTP 로그인 / 로그아웃
+  // ═══════════════════════════════════════════
+
+  /// POST /admin/login 또는 POST /login → 세션 쿠키 획득
+  Future<Map<String, dynamic>> login(
+    String loginId,
+    String password, {
+    required bool isAdmin,
+  }) async {
+    try {
+      final endpoint = isAdmin ? '$serverUrl/admin/login' : '$serverUrl/login';
+      final body = jsonEncode({'login_id': loginId, 'password': password});
+
+      final client = HttpClient();
+      try {
+        final request = await client.postUrl(Uri.parse(endpoint));
+        request.headers.contentType = ContentType.json;
+        request.write(body);
+
+        final response = await request.close();
+        final responseBody = await response.transform(utf8.decoder).join();
+        final data = jsonDecode(responseBody) as Map<String, dynamic>;
+
+        if (response.statusCode == 200 && data['success'] == true) {
+          final setCookie = response.headers.value('set-cookie');
+          final cookie = _extractSessionCookie(setCookie);
+          if (cookie != null) {
+            _sessionCookie = cookie;
+            // ★ 항상 Hive에 저장 (현재 실행 중 재연결/화면 전환에 필요)
+            await _hiveService.sessionSave(HiveKeyModel().sessionCookieKey, cookie);
+            print('🍪 세션 쿠키 저장됨: $cookie');
+          }
+
+          type = isAdmin ? 'admin' : 'client';
+          name = loginId;
+
+          final adminId = data['adminId'];
+          if (adminId != null) {
+            _adminId = adminId;
+            _userId = adminId.toString();
+          }
+
+          final user = data['user'];
+          if (user != null && user is Map<String, dynamic>) {
+            name = user['name']?.toString() ?? name;
+            final uid = user['id'];
+            if (uid != null) _userId = uid.toString();
+          }
+        }
+
+        return data;
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      print('❌ 로그인 오류: $e');
+      return {'success': false, 'message': '서버 연결에 실패했습니다'};
+    }
+  }
+
+  /// POST /logout → 세션 파괴
+  Future<bool> logout() async {
+    try {
+      if (_sessionCookie != null && _sessionCookie!.isNotEmpty) {
+        final client = HttpClient();
+        try {
+          final request = await client.postUrl(Uri.parse('$serverUrl/logout'));
+          request.headers.set(HttpHeaders.cookieHeader, _sessionCookie!);
+          await request.close();
+        } finally {
+          client.close();
+        }
+      }
+
+      disconnect();
+      _sessionCookie = null;
+      await _hiveService.sessionDelete(HiveKeyModel().sessionCookieKey);
+      _adminId = null;
+      _userId = null;
+      type = 'admin';
+      print('✅ 로그아웃 완료');
+      return true;
+    } catch (e) {
+      print('❌ 로그아웃 오류: $e');
+      return false;
+    }
+  }
+
+  /// 자동 로그인(세션 쿠키 재사용) 시 내 userId/이름 복원 — GET /session
+  Future<bool> restoreSessionInfo() async {
+    if (_sessionCookie == null || _sessionCookie!.isEmpty) return false;
+    try {
+      final client = HttpClient();
+      try {
+        final request = await client.getUrl(Uri.parse('$serverUrl/session'));
+        request.headers.set(HttpHeaders.cookieHeader, _sessionCookie!);
+        final response = await request.close();
+        final body = await response.transform(utf8.decoder).join();
+        final data = jsonDecode(body) as Map<String, dynamic>;
+        if (response.statusCode == 200 && data['success'] == true) {
+          final user = data['user'];
+          if (user != null && user is Map<String, dynamic>) {
+            final uid = user['id']?.toString();
+            if (uid != null) {
+              _userId = uid;
+              // 관리자 세션은 userId == adminId
+              if (type == 'admin') _adminId = uid;
+            }
+            final userName = user['name']?.toString();
+            if (userName != null && userName.isNotEmpty) name = userName;
+          }
+          return true;
+        }
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      print('❌ 세션 정보 복원 오류: $e');
+    }
+    return false;
+  }
+
+  /// "localSessionId=s%3Aabc123.sig; Path=/; HttpOnly" → "localSessionId=s%3Aabc123.sig"
+  String? _extractSessionCookie(String? setCookieHeader) {
+    if (setCookieHeader == null) return null;
+    for (final cookie in setCookieHeader.split(',')) {
+      final trimmed = cookie.trim();
+      if (trimmed.startsWith('localSessionId=')) {
+        return trimmed.split(';')[0].trim();
+      }
+    }
+    return null;
+  }
+
   Future<void> connectToProject(
       String projectId,
       Function() onConnected,
       Function()? onDisConnected,
       Function(String error)? onError,
       ) async {
+
+    // final previousProjectId = _projectSocketConnectedProjectId;
+
     if (_projectSocket != null) {
       _projectSocket!.clearListeners();
       _projectSocket!.disconnect();
@@ -481,7 +650,7 @@ class SocketService {
     // ★ 프로젝트 소켓 캐시 제거
     IO.cache.remove('$serverUrl/$projectId');
 
-    currentProjectId = projectId;
+    // currentProjectId = projectId;
 
     if (_sessionCookie == null) {
       onError?.call('세션 쿠키 없음');
@@ -506,13 +675,30 @@ class SocketService {
           .build(),
     );
 
+    // ★★★ 핵심: 현재 소켓 인스턴스를 캡처하여 콜백에서 비교 ★★★
+    final thisSocket = _projectSocket;
+
     _projectSocket!.onConnect((_) {
+
+      // ★ 이 소켓이 여전히 현재 활성 소켓인지 확인
+      if (_projectSocket != thisSocket) {
+        print('⚠️ onConnect: 이미 다른 소켓으로 교체됨 — 무시');
+        return;
+      }
+
       if (kDebugMode) print('프로젝트 $projectId에 연결됨');
       _projectSocketConnectedProjectId = projectId;
       onConnected?.call();
     });
 
     _projectSocket!.onDisconnect((_) {
+
+      // ★★★ 핵심: 이 소켓이 현재 활성 소켓이 아니면 콜백 호출하지 않음 ★★★
+      if (_projectSocket != thisSocket) {
+        print('⚠️ onDisconnect: 이전 소켓의 이벤트 — 무시');
+        return;
+      }
+
       if (kDebugMode) print('프로젝트 $projectId 연결 해제됨');
       if (_projectSocketConnectedProjectId == projectId) {
         _projectSocketConnectedProjectId = null;
@@ -521,6 +707,13 @@ class SocketService {
     });
 
     _projectSocket!.onError((error) {
+
+      // ★ 동일하게 현재 소켓인지 확인
+      if (_projectSocket != thisSocket) {
+        print('⚠️ onError: 이전 소켓의 이벤트 — 무시');
+        return;
+      }
+
       if (kDebugMode) print('연결 오류: $error');
       if (_projectSocketConnectedProjectId == projectId) {
         _projectSocketConnectedProjectId = null;
@@ -610,8 +803,9 @@ class SocketService {
     });
   }
 
-  void getUserAuthList(String userId, Function(bool, List<Map<String, dynamic>>) callback) {
-    _mainSocket!.emitWithAck('user-auth-list', {'userId': userId}, ack: (data) {
+  void getUserAuthList(String? userId, Function(bool, List<Map<String, dynamic>>) callback) {
+    // 서버가 일반 사용자는 세션 기준(본인)으로 강제하므로 userId 미지원(자동로그인)도 동작
+    _mainSocket!.emitWithAck('user-auth-list', {'userId': userId ?? ''}, ack: (data) {
       callback(data['success'] ?? false, List<Map<String, dynamic>>.from(data['roomList'] ?? []));
     });
   }
@@ -681,8 +875,8 @@ class SocketService {
   }
 
   void joinRoom(String roomId, String username, Function(bool, List<Map<String, dynamic>>) callback) {
-    currentRoomId = roomId;
-    currentUsername = username;
+    // currentRoomId = roomId;
+    // currentUsername = username;
     _projectSocket!.emitWithAck('join-room', {'roomId': roomId, 'userName': username}, ack: (data) {
       data['success'] == true
           ? callback(true, List<Map<String, dynamic>>.from(data['members'] ?? []))
@@ -693,6 +887,12 @@ class SocketService {
   void getAllRooms(Function(List<Map<String, dynamic>>) callback) {
     _projectSocket!.emitWithAck('room-list', {}, ack: (data) {
       if (data['success']) callback(List<Map<String, dynamic>>.from(data['rooms']));
+    });
+  }
+
+  void getRoomInfo(String roomId, Function(bool, dynamic) callback) {
+    _projectSocket?.emitWithAck('get-room-info', {'roomId': roomId}, ack: (data) {
+      callback(data?['success'] == true, data?['room']);
     });
   }
 
@@ -725,7 +925,7 @@ class SocketService {
 
   void sendPersonalMessage(String userId, String message, Function(bool, Map<String, dynamic>) callback) {
     _mainSocket!.emitWithAck('send-personal-message', {
-      'userId': userId, 'fromUsername': name, 'message': message,
+      'userId': userId, 'fromUsername': displayName, 'message': message,
     }, ack: (data) {
       callback(data['success'], data['messageData'] ?? <String, dynamic>{});
     });
@@ -747,7 +947,7 @@ class SocketService {
 
   void leaveRoom() {
     _projectSocket?.emitWithAck('leave-room', {});
-    currentRoomId = null;
+    // currentRoomId = null;
   }
 
   // -- 통화 (방) --
@@ -821,14 +1021,14 @@ class SocketService {
   }
 
   // -- 재생 제어 --
-  void sendPlay(String projectId, Function(bool) callback) {
-    _mainSocket!.emitWithAck('project-play', {'projectId': projectId}, ack: (data) {
+  void sendPlay(String projectId, double time ,Function(bool) callback) {
+    _mainSocket!.emitWithAck('project-play', {'projectId': projectId, 'time' : time}, ack: (data) {
       callback(data['success']);
     });
   }
 
-  void sendPause(String projectId, Function(bool) callback) {
-    _mainSocket!.emitWithAck('project-pause', {'projectId': projectId}, ack: (data) {
+  void sendPause(String projectId, double time, Function(bool) callback) {
+    _mainSocket!.emitWithAck('project-pause', {'projectId': projectId, 'time' : time}, ack: (data) {
       callback(data['success']);
     });
   }
@@ -868,36 +1068,5 @@ class SocketService {
   void disposeAll() {
     stopAutoDiscovery();
     disconnect();
-    _receivePersonalMessage.close();
-    _userStatusChanged.close();
-    _directCallAccepted.close();
-    _directCallRejected.close();
-    _directCallEnded.close();
-    _directCallTimeout.close();
-    _directWebRTCOffer.close();
-    _directWebRTCAnswer.close();
-    _directWebRTCIce.close();
-    _trackAdded.close();
-    _trackUpdated.close();
-    _trackDeleted.close();
-    _userJoined.close();
-    _userLeft.close();
-    _receiveMessage.close();
-    _receiveMessageProjectWhole.close();
-    _stateUpdated.close();
-    _roomCreated.close();
-    _roomUpdated.close();
-    _roomDeleted.close();
-    _callParticipantsUpdated.close();
-    _userJoinedCall.close();
-    _userLeftCall.close();
-    _peerMuteChanged.close();
-    _webRTCOffer.close();
-    _webRTCAnswer.close();
-    _webRTCIce.close();
-    _onPlay.close();
-    _onPause.close();
-    _onStop.close();
-    _timelineHeartbeat.close();
   }
 }

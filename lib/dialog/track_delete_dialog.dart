@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import '../services/socket_service.dart';
 
 class DeleteTrackDialog extends StatefulWidget {
   final String projectId;
   final String roomId;
   final String trackId;
   final String trackName;
-  final Function(bool success, String trackId) onTrackDeleted;
+  final Function() onTrackDeleted;
 
   const DeleteTrackDialog({
     Key? key,
@@ -23,8 +21,6 @@ class DeleteTrackDialog extends StatefulWidget {
 }
 
 class _DeleteTrackDialogState extends State<DeleteTrackDialog> {
-  final socketService = SocketService();
-
   bool _isDeleting = false;
   // bool _createDefaultTracks = true;
 
@@ -41,22 +37,9 @@ class _DeleteTrackDialogState extends State<DeleteTrackDialog> {
       _isDeleting = true;
     });
 
-    socketService.deleteTrack(widget.projectId.trim(),widget.roomId.trim(),widget.trackId.trim(), (success,trackId) {
-      if (mounted) {
-        setState(() {
-          _isDeleting = false;
-        });
+    Navigator.pop(context);
+    widget.onTrackDeleted();
 
-        if (success && trackId != null) {
-          Navigator.pop(context);
-          widget.onTrackDeleted(success, trackId);
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('타임라인 삭제 실패')),
-          );
-        }
-      }
-    });
   }
 
   @override
@@ -64,7 +47,7 @@ class _DeleteTrackDialogState extends State<DeleteTrackDialog> {
     return AlertDialog(
       title: const Row(
         children: [
-          Icon(Icons.add_circle, color: Colors.blue),
+          Icon(Icons.delete, color: Colors.blue),
           SizedBox(width: 12),
           Text('타임라인 삭제'),
         ],
@@ -86,7 +69,7 @@ class _DeleteTrackDialogState extends State<DeleteTrackDialog> {
               color: Colors.white,
             ),
           )
-              : const Icon(Icons.add),
+              : const Icon(Icons.delete),
           label: Text(_isDeleting ? '삭제 중...' : '삭제'),
         ),
       ],

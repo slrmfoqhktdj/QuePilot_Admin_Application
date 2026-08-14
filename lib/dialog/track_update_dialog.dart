@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:que_pilot_admin_01/dialog/cue_update_dialog.dart';
 import '../models/timeline_cue_model.dart';
+import '../models/timeline_room_model.dart';
+import '../models/timeline_track_model.dart';
 import '../services/socket_service.dart';
 import '../utils/colorUtils.dart';
-import '../widgets/cue_expansion_tile.dart';
+import '../utils/text_formatters.dart';
 
 class UpdateTrackDialog extends StatefulWidget {
   final String projectId;
-  // final List<Room>? roomList;
-  final Function(Map<String,dynamic>) onTimelineUpdated;
+  final List<Room>? roomList;
+  final Function(Track) onTimelineUpdated;
 
   final String? roomId;
   final List<Cue> cueList;
@@ -18,9 +21,8 @@ class UpdateTrackDialog extends StatefulWidget {
   const UpdateTrackDialog({
     Key? key,
     required this.projectId,
-    // required this.roomList,
+    this.roomList,
     required this.onTimelineUpdated,
-
     required this.roomId,
     required this.cueList,
     required this.trackName,
@@ -51,15 +53,14 @@ class _UpdateTrackDialogState extends State<UpdateTrackDialog> {
     // print("dialog: ${widget.roomList}");
 
     _selectedRoomId = widget.roomId;
-    _cues = widget.cueList;
+    _cues = List<Cue>.from(widget.cueList);
     _nameController.text = widget.trackName;
 
-
-    for(int i = 0; i < widget.cueList.length; i ++) {
-      print("id : ${widget.cueList[i].id} , ${widget.cueList[i].label} , ${widget.cueList[i].color} , ${widget.cueList[i].startTime},${widget.cueList[i].duration}");
+    for (int i = 0; i < widget.cueList.length; i++) {
+      print(
+          "id : ${widget.cueList[i].id} , ${widget.cueList[i].label} , ${widget.cueList[i].color} , ${widget.cueList[i].startTime},${widget.cueList[i].duration}");
     }
   }
-
 
   @override
   void dispose() {
@@ -69,22 +70,52 @@ class _UpdateTrackDialogState extends State<UpdateTrackDialog> {
     super.dispose();
   }
 
-  void _addCue() {
-    setState(() {
-      _cues.add(Cue(
-        label: 'Cue ${_cues.length + 1}',
-        comment: '',
-        startTime: 0,
-        duration: 10,
-        color: ColorUtils.parseHex(Colors.blue),
-      ));
-    });
+  void _addCue() async {
+    final newCue = await CueUpdateDialog.showForCreate(context,
+        startTime: 0, existingCues: _cues);
+    if (newCue != null) {
+      setState(() {
+        _cues.add(newCue);
+        _syncCueColors(sourceCueIndex: _cues.length - 1);
+      });
+    }
   }
 
   void _removeCue(int index) {
     setState(() {
       _cues.removeAt(index);
     });
+  }
+
+  void _syncCueColors({int? sourceCueIndex}) {
+    final colorMap = <String, String>{};
+    for (final cue in _cues) {
+      if (cue.label.isNotEmpty) {
+        colorMap[cue.label] = cue.color;
+      }
+    }
+    if (sourceCueIndex != null &&
+        sourceCueIndex >= 0 &&
+        sourceCueIndex < _cues.length) {
+      final src = _cues[sourceCueIndex];
+      if (src.label.isNotEmpty) {
+        colorMap[src.label] = src.color;
+      }
+    }
+    for (int i = 0; i < _cues.length; i++) {
+      final syncColor = colorMap[_cues[i].label];
+      if (syncColor != null && _cues[i].color != syncColor) {
+        _cues[i] = Cue(
+          id: _cues[i].id,
+          startTime: _cues[i].startTime,
+          duration: _cues[i].duration,
+          label: _cues[i].label,
+          comment: _cues[i].comment,
+          color: syncColor,
+          data: _cues[i].data,
+        );
+      }
+    }
   }
 
   void _updateTimeline() async {
@@ -96,29 +127,12 @@ class _UpdateTrackDialogState extends State<UpdateTrackDialog> {
       _isCreating = true;
     });
 
-    socketService.updateTrack(
-      widget.projectId,
-      widget.trackId,
-      _nameController.text.trim(),
-      _selectedRoomId!,
-      _cues,
-          (success, data) {
-        if (mounted) {
-          setState(() {
-            _isCreating = false;
-          });
-
-          if (success) {
-            Navigator.pop(context);
-            widget.onTimelineUpdated(data!);
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('타임라인 수정 실패')),
-            );
-          }
-        }
-      },
-    );
+    Navigator.pop(context);
+    widget.onTimelineUpdated(Track(
+        id: widget.trackId,
+        room_id: _selectedRoomId!,
+        name: _nameController.text.trim(),
+        cues: _cues));
   }
 
   @override
@@ -147,6 +161,7 @@ class _UpdateTrackDialogState extends State<UpdateTrackDialog> {
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.label),
                 ),
+                inputFormatters: noOuterWhitespace,
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
                     return '타임라인 이름을 입력하세요';
@@ -155,26 +170,26 @@ class _UpdateTrackDialogState extends State<UpdateTrackDialog> {
                 },
               ),
               const SizedBox(height: 16),
-              // DropdownButton(
-              //   value: _selectedRoomId,
-              //   hint: const Text('타임라인을 개시할 그룹을 선택해주세요'),
-              //   isExpanded: true,
-              //   items: widget.roomList?.map((item) {
-              //     Map<String,dynamic> jsonItem = item.toJson();
-              //     return DropdownMenuItem(
-              //       value: jsonItem['id'].toString(),
-              //       child: Text(jsonItem['name'].toString()),
-              //
-              //     );
-              //   }).toList(),
-              //   onChanged: (value) {
-              //     setState(() {
-              //       _selectedRoomId = value;
-              //     });
-              //   },
-              //
-              // ),
-
+              if (widget.roomList != null && widget.roomList!.isNotEmpty)
+                DropdownButtonFormField<String>(
+                  value: _selectedRoomId,
+                  decoration: const InputDecoration(
+                    labelText: '개시 방',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.meeting_room),
+                  ),
+                  items: widget.roomList!.map((item) {
+                    return DropdownMenuItem(
+                      value: item.id,
+                      child: Text(item.name),
+                    );
+                  }).toList(),
+                  onChanged: (value) {
+                    setState(() {
+                      _selectedRoomId = value;
+                    });
+                  },
+                ),
               const SizedBox(height: 16),
 
               // 큐 목록 섹션 헤더
@@ -203,7 +218,6 @@ class _UpdateTrackDialogState extends State<UpdateTrackDialog> {
               ),
               const SizedBox(height: 12),
 
-
               // 큐 리스트 (ExpansionTile 방식)
               if (_cues.isEmpty)
                 Container(
@@ -229,25 +243,68 @@ class _UpdateTrackDialogState extends State<UpdateTrackDialog> {
                   ),
                 )
               else
-
                 ..._cues.asMap().entries.map((entry) {
                   final index = entry.key;
                   final cue = entry.value;
-                  return CueExpansionTile(
-                    cue: cue,
-                    index: index,
-                    onUpdate: (updatedCue) {
-                      setState(() {
-                        _cues[index] = updatedCue;
-                      });
-                    },
-                    onDelete: () => _removeCue(index),
+                  // final color = ColorUtils.parseColor(cue.color);
+
+                  //   return CueExpansionTile(
+                  //     cue: cue,
+                  //     index: index,
+                  //     onUpdate: (updatedCue) {
+                  //       setState(() {
+                  //         _cues[index] = updatedCue;
+                  //       });
+                  //     },
+                  //     onDelete: () => _removeCue(index),
+                  //   );
+                  // }).toList(),
+
+                  return Card(
+                    child: ListTile(
+                      leading: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: ColorUtils.parseColor(cue.color),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: Center(
+                          child: Text('${index + 1}',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                      title: Text(
+                          cue.label.isEmpty ? 'Cue ${index + 1}' : cue.label),
+                      subtitle: Text(
+                        '${cue.startTime}초 → ${cue.startTime + cue.duration}초 (${cue.duration}초)',
+                      ),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () => _removeCue(index),
+                      ),
+                      onTap: () async {
+                        final updated = await CueUpdateDialog.showForUpdate(
+                          context,
+                          cue: cue,
+                          existingCues: _cues,
+                        );
+                        if (updated != null) {
+                          // 여기서 기존 onUpdate(updated) 콜백 호출
+                          setState(() {
+                            _cues[index] = updated;
+                            _syncCueColors(sourceCueIndex: index);
+                          });
+                        }
+                      },
+                    ),
                   );
                 }).toList(),
 
               const SizedBox(height: 16),
-
-
             ],
           ),
         ),
@@ -261,19 +318,17 @@ class _UpdateTrackDialogState extends State<UpdateTrackDialog> {
           onPressed: _isCreating ? null : _updateTimeline,
           icon: _isCreating
               ? const SizedBox(
-            width: 16,
-            height: 16,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: Colors.white,
-            ),
-          )
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
               : const Icon(Icons.add),
           label: Text(_isCreating ? '수정 중...' : '수정'),
         ),
       ],
     );
   }
-
-
 }

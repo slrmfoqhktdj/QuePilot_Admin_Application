@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/socket_service.dart';
+import '../utils/text_formatters.dart';
 
 class UpdateProjectDialog extends StatefulWidget {
   final String projectId;
@@ -19,6 +20,65 @@ class UpdateProjectDialog extends StatefulWidget {
     required this.onProjectUpdated,
   }) : super(key: key);
 
+  static Future<void> showDraggable(
+    BuildContext context, {
+    required String projectId,
+    required String projectName,
+    required int duration,
+    required Function(String, int) onProjectUpdated,
+  }) {
+    return _showDraggableDialog(
+      context,
+      UpdateProjectDialog(
+        projectId: projectId,
+        projectName: projectName,
+        duration: duration,
+        onProjectUpdated: onProjectUpdated,
+      ),
+    );
+  }
+
+  static Future<void> _showDraggableDialog(BuildContext context, Widget dialog) {
+    Offset dialogOffset = Offset.zero;
+
+    return showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'dialog',
+      barrierColor: Colors.black54,
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Stack(
+              children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    behavior: HitTestBehavior.translucent,
+                    child: Container(color: Colors.transparent),
+                  ),
+                ),
+                Center(
+                  child: Transform.translate(
+                    offset: dialogOffset,
+                    child: GestureDetector(
+                      onPanUpdate: (details) {
+                        setDialogState(() {
+                          dialogOffset += details.delta;
+                        });
+                      },
+                      child: dialog,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   State<UpdateProjectDialog> createState() => _UpdateProjectDialogState();
 }
@@ -31,13 +91,14 @@ class _UpdateProjectDialogState extends State<UpdateProjectDialog> {
   final TextEditingController _durationController = TextEditingController();
   // final TextEditingController _fpsController = TextEditingController();
 
+
   bool _isUpdating = false;
 
   @override
   void initState() {
     super.initState();
     _nameController.text = widget.projectName;
-    _durationController.text = widget.duration.toString();
+    _durationController.text = (widget.duration / 3600).toInt().toString();
     // _fpsController.text = widget.fps.toString();
   }
 
@@ -59,7 +120,7 @@ class _UpdateProjectDialogState extends State<UpdateProjectDialog> {
       _isUpdating = true;
     });
 
-    socketService.updateProject(widget.projectId, _nameController.text.trim(),int.parse(_durationController.text), (success , projectList) {
+    socketService.updateProject(widget.projectId, _nameController.text.trim(),int.parse(_durationController.text) * 3600, (success , projectList) {
       if (mounted) {
         setState(() {
           _isUpdating = false;
@@ -103,6 +164,7 @@ class _UpdateProjectDialogState extends State<UpdateProjectDialog> {
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.label),
                 ),
+                inputFormatters: noOuterWhitespace,
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
                     return '프로젝트 이름을 입력하세요';
@@ -116,11 +178,11 @@ class _UpdateProjectDialogState extends State<UpdateProjectDialog> {
               TextFormField(
                 controller: _durationController,
                 decoration: const InputDecoration(
-                  labelText: 'Duration (초)',
-                  hintText: '120',
+                  labelText: 'Duration (시간)',
+                  hintText: '5',
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.timer),
-                  suffixText: '초',
+                  suffixText: '시간',
                 ),
                 keyboardType: TextInputType.number,
                 inputFormatters: [
@@ -134,8 +196,8 @@ class _UpdateProjectDialogState extends State<UpdateProjectDialog> {
                   if (duration == null || duration <= 0) {
                     return '유효한 숫자를 입력하세요 (1 이상)';
                   }
-                  if (duration > 3600) {
-                    return 'Duration은 3600초를 초과할 수 없습니다';
+                  if (duration > 8) {
+                    return 'Duration은 8시간을 초과할 수 없습니다';
                   }
                   return null;
                 },

@@ -2,24 +2,20 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:que_pilot_admin_01/models/message_model.dart';
-import '../models/timeline_cue_model.dart';
-import '../models/timeline_track_model.dart';
 import '../services/socket_service.dart';
-
-import '../controllers/timeline_controller.dart';
-import 'timeline_widget.dart';
+import 'room_slide_call_widget.dart';
 
 class RoomSlideChatWidget extends StatefulWidget {
   final String roomId;
   final String username;
-  // final List<Map<String, dynamic>> joinedMembers;
+  final List<Map<String, dynamic>> joinedMembers;
   // final List<Map<String, dynamic>> initMessages;
 
   const RoomSlideChatWidget({
     Key? key,
     required this.roomId,
     required this.username,
-    // required this.joinedMembers,
+    required this.joinedMembers,
     // required this.initMessages,
   }) : super(key: key);
 
@@ -38,7 +34,7 @@ class _RoomSlideChatWidgetState extends State<RoomSlideChatWidget> {
   @override
   void initState() {
     super.initState();
-
+    print('RoomSlideChatWidget initState');
     _setupEventListeners();
 
     // _loadRoomMembers();
@@ -53,11 +49,11 @@ class _RoomSlideChatWidgetState extends State<RoomSlideChatWidget> {
   void _setupEventListeners() {
 
     _subs.add(socketService.userJoined.listen((data) {
-      _addMessage(MessageData(fromUserId: data.userId, fromUsername: '[알림]', message: '$data.username이 입장했습니다.', timestamp: data.timestamp));
+      _addMessage(MessageData(fromUserId: data.userId, fromUsername: '[알림]', message: '${data.userName}이 입장했습니다.', timestamp: data.timestamp));
     }));
 
     _subs.add(socketService.userLeft.listen((data) {
-      _addMessage(MessageData(fromUserId: data.userId, fromUsername: '[알림]', message: '$data.username이 나갔습니다.', timestamp: data.timestamp));
+      _addMessage(MessageData(fromUserId: data.userId, fromUsername: '[알림]', message: '${data.userName}이 나갔습니다.', timestamp: data.timestamp));
     }));
 
     _subs.add(socketService.receiveMessage.listen((data) {
@@ -184,18 +180,37 @@ class _RoomSlideChatWidgetState extends State<RoomSlideChatWidget> {
               ),
             ),
 
+            // 통화 버튼 + 통화중 칩 (메시지 목록과 입력창 사이)
+            RoomSlideCallWidget(
+              roomId: widget.roomId,
+              username: widget.username,
+              joinedMembers: widget.joinedMembers,
+              key: ValueKey(widget.roomId),
+            ),
+
             Padding(
               padding: const EdgeInsets.all(8.0),
               child: Row(
                 children: [
                   Expanded(
-                    child: TextField(
-                      controller: messageController,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(
-                        hintText: '메시지 입력',
-                        hintStyle: TextStyle(color: Colors.white),
-                        border: OutlineInputBorder(),
+                    child: Theme(
+                      data: Theme.of(context).copyWith(
+                        hoverColor: Colors.white.withValues(alpha: 0.08),
+                      ),
+                      child: TextField(
+                        controller: messageController,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          hintText: '메시지 입력',
+                          hintStyle: const TextStyle(color: Colors.white54),
+                          border: const OutlineInputBorder(),
+                          focusedBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.blue.shade300, width: 2),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.grey.shade600),
+                          ),
+                        ),
                       ),
                     ),
                   ),

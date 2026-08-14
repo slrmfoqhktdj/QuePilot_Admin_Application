@@ -155,7 +155,7 @@ class RoomUserEvent {
       userId: data['userId'] as String,
       userName: data['userName'] as String,
       totalMembers: data['totalMembers'] as int? ?? 0,
-      timestamp: DateTime.parse(data['timestamp'] as String),
+      timestamp: DateTime.parse(data['timestamp'] as String).toLocal(),
     );
   }
 }
@@ -195,7 +195,7 @@ class RoomCreatedEvent {
     return RoomCreatedEvent(
       roomId: data['roomId'] as String,
       roomName: data['roomName'] as String,
-      createdAt: DateTime.parse(data['createdAt'] as String),
+      createdAt: DateTime.parse(data['createdAt'] as String).toLocal(),
     );
   }
 }

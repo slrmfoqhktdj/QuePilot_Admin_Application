@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import '../services/socket_service.dart';
 
 class DeleteRoomDialog extends StatefulWidget {
@@ -60,7 +59,7 @@ class _DeleteRoomDialogState extends State<DeleteRoomDialog> {
     return AlertDialog(
       title: const Row(
         children: [
-          Icon(Icons.add_circle, color: Colors.blue),
+          Icon(Icons.delete, color: Colors.blue),
           SizedBox(width: 12),
           Text('방 삭제'),
         ],
@@ -82,7 +81,7 @@ class _DeleteRoomDialogState extends State<DeleteRoomDialog> {
               color: Colors.white,
             ),
           )
-              : const Icon(Icons.add),
+              : const Icon(Icons.delete),
           label: Text(_isDeleting ? '삭제 중...' : '삭제'),
         ),
       ],

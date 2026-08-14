@@ -1,22 +1,30 @@
 import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'dart:convert';
+import '../db/hive_service.dart';
 import '../models/timeline_cue_model.dart';
 import '../models/timeline_model.dart';
 import '../models/timeline_track_model.dart';
 
 class TimelineController extends ChangeNotifier {
+  final ValueNotifier<double> currentTimeNotifier = ValueNotifier<double>(0);
+
   TimelineData? _timelineData;
   double _currentTime = 0;
   bool _isPlaying = false;
   Timer? _timer;
   double _playbackSpeed = 1.0;
-  double _zoom = 1.0;
+  late double _zoom;
+  final _hiveService = HiveService();
 
   final int _frame_milliseconds = 16;
 
   // 정지시 호출되는 콜백
   VoidCallback? onStopCallback;
+
+  TimelineController() {
+    _zoom = _hiveService.readTimelineZoom();
+  }
 
   TimelineData? get timelineData => _timelineData;
   double get currentTime => _currentTime;
@@ -29,6 +37,9 @@ class TimelineController extends ChangeNotifier {
     try {
       _timelineData = TimelineData.fromJson(timelineMap);
       _currentTime = 0;
+      currentTimeNotifier.value = 0;
+      // Hive에 저장된 트랙 순서 적용
+      applyTrackOrder();
       notifyListeners();
       if (kDebugMode) {
         print('타임라인 로드 성공: ${_timelineData?.tracks.length} 트랙');
@@ -83,6 +94,7 @@ class TimelineController extends ChangeNotifier {
     // 현재 시간이 새 duration을 초과하면 조정
     if (_currentTime > duration) {
       _currentTime = duration;
+      currentTimeNotifier.value = _currentTime;
     }
 
     // TimelineData 업데이트
@@ -247,8 +259,98 @@ class TimelineController extends ChangeNotifier {
     final trackIndex = _timelineData!.tracks.indexWhere((t) => t.id == trackId);
     if (trackIndex != -1) {
       _timelineData!.tracks.removeAt(trackIndex);
+      // Hive에서 해당 트랙 순서 제거 + 재인덱싱
+      _removeAndReindexTrackOrder(trackId);
       notifyListeners();
     }
+  }
+
+  // Hive 기준으로 트랙 순서 적용
+  void applyTrackOrder() {
+    if (_timelineData == null) return;
+    if (_timelineData!.tracks.isEmpty) return;
+
+    final hiveService = HiveService();
+    final savedOrders = hiveService.getAllTrackOrders();
+    if (savedOrders.isEmpty) return;
+
+    final tracks = List<Track>.from(_timelineData!.tracks);
+    final indexed = <int, Track>{};
+    final unindexed = <Track>[];
+
+    for (var track in tracks) {
+      final order = savedOrders[track.id];
+      if (order != null && order >= 0 && order < tracks.length) {
+        indexed[order] = track;
+      } else {
+        unindexed.add(track);
+      }
+    }
+
+    // indexed 위치에 배치, 비어있는 자리는 unindexed에서 채움
+    final result = <Track>[];
+    int unindexedIdx = 0;
+    for (int i = 0; i < tracks.length; i++) {
+      if (indexed.containsKey(i)) {
+        result.add(indexed[i]!);
+      } else if (unindexedIdx < unindexed.length) {
+        result.add(unindexed[unindexedIdx++]);
+      }
+    }
+
+    // unindexed가 남으면 끝에 추가
+    while (unindexedIdx < unindexed.length) {
+      result.add(unindexed[unindexedIdx++]);
+    }
+
+    _timelineData = TimelineData(
+      duration: _timelineData!.duration,
+      projectId: _timelineData!.projectId,
+      tracks: result,
+      createdAt: _timelineData!.createdAt,
+    );
+  }
+
+  // 트랙 순서 변경 (드래그 완료 시 호출)
+  void reorderTrack(int oldIndex, int newIndex) {
+    if (_timelineData == null) return;
+    if (oldIndex == newIndex) return;
+    if (oldIndex < 0 || oldIndex >= _timelineData!.tracks.length) return;
+    if (newIndex < 0 || newIndex >= _timelineData!.tracks.length) return;
+
+    final tracks = List<Track>.from(_timelineData!.tracks);
+    final track = tracks.removeAt(oldIndex);
+    tracks.insert(newIndex, track);
+
+    _timelineData = TimelineData(
+      duration: _timelineData!.duration,
+      projectId: _timelineData!.projectId,
+      tracks: tracks,
+      createdAt: _timelineData!.createdAt,
+    );
+
+    // 새 순서를 Hive에 저장
+    _saveAllTrackOrders();
+    notifyListeners();
+  }
+
+  // 현재 트랙 순서를 Hive에 저장
+  void _saveAllTrackOrders() {
+    if (_timelineData == null) return;
+    final hiveService = HiveService();
+    final orders = <String, int>{};
+    for (int i = 0; i < _timelineData!.tracks.length; i++) {
+      orders[_timelineData!.tracks[i].id] = i;
+    }
+    hiveService.saveTrackOrders(orders);
+  }
+
+  // Hive에서 트랙 순서 제거 후 재인덱싱
+  void _removeAndReindexTrackOrder(String removedTrackId) {
+    final hiveService = HiveService();
+    hiveService.trackOrderRemove(removedTrackId);
+    // 현재 리스트 기준으로 순서 재저장
+    _saveAllTrackOrders();
   }
 
   // 재생/일시정지 토글
@@ -264,18 +366,20 @@ class TimelineController extends ChangeNotifier {
   void play() {
     if (_timelineData == null) return;
 
+    // 기존 타이머가 있으면 먼저 정리 (이중 타이머 방지)
+    _timer?.cancel();
     _isPlaying = true;
+    notifyListeners();
     _timer = Timer.periodic(Duration(milliseconds: _frame_milliseconds), (timer) {
       _currentTime += _frame_milliseconds * 0.001 * _playbackSpeed;
-      // print(_currentTime.toString());
       if (_currentTime >= _timelineData!.duration) {
         _currentTime = _timelineData!.duration;
         pause();
+        return;
       }
 
-      notifyListeners();
+      currentTimeNotifier.value = _currentTime;
     });
-    notifyListeners();
   }
 
   // 일시정지
@@ -283,6 +387,7 @@ class TimelineController extends ChangeNotifier {
     _isPlaying = false;
     _timer?.cancel();
     _timer = null;
+    currentTimeNotifier.value = _currentTime;
     notifyListeners();
   }
 
@@ -290,6 +395,7 @@ class TimelineController extends ChangeNotifier {
   void stop() {
     pause();
     _currentTime = 0;
+    currentTimeNotifier.value = 0;
     notifyListeners();
 
     onStopCallback?.call();
@@ -298,8 +404,8 @@ class TimelineController extends ChangeNotifier {
   // 특정 시간으로 이동
   void seekTo(double time) {
     if (_timelineData == null) return;
-    // _currentTime = time.clamp(0, _timelineData!.duration);
     _currentTime = time;
+    currentTimeNotifier.value = time;
     notifyListeners();
   }
 
@@ -312,23 +418,24 @@ class TimelineController extends ChangeNotifier {
   // 줌 레벨 변경
   void setZoom(double zoom) {
     _zoom = zoom.clamp(0.1, 10.0);
+    _hiveService.saveTimelineZoom(_zoom);
     notifyListeners();
   }
 
   // 현재 활성 큐 찾기
-  List<Cue> getActiveCues() {
-    if (_timelineData == null) return [];
-
-    List<Cue> activeCues = [];
-    for (var track in _timelineData!.tracks) {
-      for (var cue in track.cues) {
-        if (_currentTime >= cue.startTime && _currentTime <= cue.endTime) {
-          activeCues.add(cue);
-        }
-      }
-    }
-    return activeCues;
-  }
+  // List<Cue> getActiveCues() {
+  //   if (_timelineData == null) return [];
+  //
+  //   List<Cue> activeCues = [];
+  //   for (var track in _timelineData!.tracks) {
+  //     for (var cue in track.cues) {
+  //       if (_currentTime >= cue.startTime && _currentTime <= cue.endTime) {
+  //         activeCues.add(cue);
+  //       }
+  //     }
+  //   }
+  //   return activeCues;
+  // }
 
   // 타임라인 데이터를 Map으로 변환
   Map<String, dynamic>? toMap() {

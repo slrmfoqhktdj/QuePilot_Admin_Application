@@ -21,7 +21,7 @@ class MessageData {
       fromUserId: json['fromUserId'] as String,
       fromUsername: json['fromUsername'] as String,
       message: json['message'] as String,
-      timestamp: DateTime.parse(json['timestamp'] as String),
+      timestamp: DateTime.parse(json['timestamp'] as String).toLocal(),
     );
   }
 

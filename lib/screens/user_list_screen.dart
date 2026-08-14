@@ -12,7 +12,7 @@ import '../models/message_model.dart';
 import '../models/user_model.dart';
 import '../services/direct_web_rtc_service.dart';
 import '../services/socket_service.dart';
-import 'package:searchable_listview/searchable_listview.dart';
+
 
 class UserListScreen extends StatefulWidget {
   const UserListScreen({Key? key}) : super(key: key);
@@ -25,7 +25,8 @@ class _UserListScreenState extends State<UserListScreen> {
   final socketService = SocketService();
   final List<StreamSubscription> _subs = [];
   List<User> users = [];
-  // final TextEditingController UserNameController = TextEditingController();
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
 
   //단일 오버레이 관리
   OverlayEntry? _currentChatOverlay;
@@ -73,7 +74,7 @@ class _UserListScreenState extends State<UserListScreen> {
     _subs.add(socketService.directCallAccepted.listen((data) async{
       if (data.callId != _activeCallId) return;
 
-      print('✅ [DirectCall] 수락됨: $data.receiverName');
+      print('✅ [DirectCall] 수락됨: ${data.receiverName}');
       setState(() {
         _callStatus = _DirectCallStatus.connecting;
         _activeCallPeerName = data.receiverName;
@@ -88,11 +89,11 @@ class _UserListScreenState extends State<UserListScreen> {
     _subs.add(socketService.directCallRejected.listen((data) {
       if (data.callId != _activeCallId) return;
 
-      print('❌ [DirectCall] 거절됨: $data.receiverName');
+      print('❌ [DirectCall] 거절됨: ${data.receiverName}');
       _endCallCleanup();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$data.receiverName 님이 통화를 거절했습니다.')),
+          SnackBar(content: Text('${data.receiverName} 님이 통화를 거절했습니다.')),
         );
       }
     }));
@@ -102,14 +103,14 @@ class _UserListScreenState extends State<UserListScreen> {
     _subs.add(socketService.directCallEnded.listen((data) {
       if (data.callId != _activeCallId) return;
 
-      print('🔴 [DirectCall] 종료됨: by $data.endedByName (reason: $data.reason)');
+      print('🔴 [DirectCall] 종료됨: by ${data.endedByName} (reason: ${data.reason})');
       _endCallCleanup();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(data.reason == 'disconnected'
-                ? '$data.endedByName 님의 연결이 끊어졌습니다.'
-                : '$data. 님이 통화를 종료했습니다.'),
+                ? '${data.endedByName} 님의 연결이 끊어졌습니다.'
+                : '${data.endedByName} 님이 통화를 종료했습니다.'),
           ),
         );
       }
@@ -645,60 +646,38 @@ class _UserListScreenState extends State<UserListScreen> {
         color: Colors.grey[900],
         child: Column(
           children: [
-            Expanded(
-              child: users.isEmpty ?
-              const Center(
-                child: Text(
-                  '유저가 없습니다.',
-                  style:TextStyle(fontSize: 16,color: Colors.grey),
-                ),
-              ) : Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20,vertical: 8),
-                child: SearchableList<User>(
-                  key: ValueKey(users.length+users.hashCode),
-                  initialList: users,
-                  itemBuilder: (User user) => _buildUserItem(user),
-                  filter: (query) => users.where((user) {
-                    final name = user.name.toLowerCase();
-                    final id = user.id.toLowerCase();
-                    final searchQuery = query.toLowerCase();
-
-                    return name.contains(searchQuery) || id.contains(searchQuery);
-                  }).toList(),
-                  emptyWidget: const Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.search_off,
-                          size: 80,
-                          color: Colors.grey,
+            if (users.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: SizedBox(
+                    width: 280,
+                    height: 36,
+                    child: TextField(
+                      controller: _searchController,
+                      onChanged: (value) => setState(() => _searchQuery = value),
+                      decoration: InputDecoration(
+                        hintText: "유저 검색",
+                        fillColor: Colors.white,
+                        filled: true,
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(
+                            color: Colors.blue,
+                            width: 1.0,
+                          ),
                         ),
-                        SizedBox(height: 16),
-                        Text(
-                          '검색 결과가 없습니다',
-                          style: TextStyle(fontSize: 18, color: Colors.grey),
-                        ),
-                      ],
-                    ),
-                  ),
-                  inputDecoration: InputDecoration(
-                    labelText: "유저 검색",
-                    fillColor: Colors.white,
-                    filled: true,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(
-                        color: Colors.blue,
-                        width: 1.0,
+                        prefixIcon: const Icon(Icons.search, size: 18),
                       ),
                     ),
-                    prefixIcon: const Icon(Icons.search),
                   ),
-
                 ),
-
-              )
+              ),
+            Expanded(
+              child: _buildUserList(),
             ),
           ],
         ),
@@ -709,6 +688,16 @@ class _UserListScreenState extends State<UserListScreen> {
     );
   }
 
+
+  String _formatDate(String? dateStr) {
+    if (dateStr == null || dateStr.isEmpty) return 'N/A';
+    try {
+      final dt = DateTime.parse(dateStr).toLocal();
+      return '${dt.year}.${dt.month.toString().padLeft(2, '0')}.${dt.day.toString().padLeft(2, '0')}';
+    } catch (_) {
+      return dateStr;
+    }
+  }
 
   // 유저 아이템 빌더
   Widget _buildUserItem(User user) {
@@ -735,14 +724,21 @@ class _UserListScreenState extends State<UserListScreen> {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('ID: ${user.id ?? 'N/A'}',
+            Text('ID: ${user.id}',
               style: TextStyle(
                 color: Colors.grey[500] ,
                 fontSize: 12,
               ),
             ),
             const SizedBox(height: 4),
-            Text('LoginID: ${user.login_id ?? 'N/A'}',
+            Text('LoginID: ${user.login_id}',
+              style: TextStyle(
+                color: Colors.grey[500] ,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text('가입일: ${_formatDate(user.createdAt)}',
               style: TextStyle(
                 color: Colors.grey[500] ,
                 fontSize: 12,
@@ -870,8 +866,49 @@ class _UserListScreenState extends State<UserListScreen> {
 
 
 
+  List<User> get _filteredUsers {
+    if (_searchQuery.isEmpty) return users;
+    final query = _searchQuery.toLowerCase();
+    return users.where((user) =>
+      user.name.toLowerCase().contains(query) ||
+      user.id.toLowerCase().contains(query)
+    ).toList();
+  }
+
+  Widget _buildUserList() {
+    final filtered = _filteredUsers;
+    if (users.isEmpty) {
+      return const Center(
+        child: Text(
+          '유저가 없습니다.',
+          style: TextStyle(fontSize: 16, color: Colors.grey),
+        ),
+      );
+    }
+    if (filtered.isEmpty) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.search_off, size: 80, color: Colors.grey),
+            SizedBox(height: 16),
+            Text(
+              '검색 결과가 없습니다',
+              style: TextStyle(fontSize: 18, color: Colors.grey),
+            ),
+          ],
+        ),
+      );
+    }
+    return ListView.builder(
+      itemCount: filtered.length,
+      itemBuilder: (context, index) => _buildUserItem(filtered[index]),
+    );
+  }
+
   @override
   void dispose() {
+    _searchController.dispose();
 
     for(final sub in _subs){
       sub.cancel();

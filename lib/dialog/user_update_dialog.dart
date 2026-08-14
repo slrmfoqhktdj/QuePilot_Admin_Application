@@ -1,10 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import '../models/timeline_cue_model.dart';
 import '../models/user_model.dart';
 import '../services/socket_service.dart';
-import '../utils/colorUtils.dart';
-import '../widgets/cue_expansion_tile.dart';
 
 class UpdateUserDialog extends StatefulWidget {
   final User user;

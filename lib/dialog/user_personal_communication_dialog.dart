@@ -83,7 +83,7 @@ class _UserPersonalCommunicationDialogState extends State<UserPersonalCommunicat
     socketService.getPersonalMessages(widget.targetUser.id, (list) {
 
       if(mounted){
-        List<MessageData> m = list.map((e) => MessageData.fromJson({...e,'fromUsername':e['fromUserId'] == widget.targetUser.id ? widget.targetUser.name : socketService.adminId})).toList();
+        List<MessageData> m = list.map((e) => MessageData.fromJson({...e,'fromUsername':e['fromUserId'] == widget.targetUser.id ? widget.targetUser.name : socketService.name})).toList();
 
         setState(() {
           _messages.addAll(m);
@@ -159,12 +159,6 @@ class _UserPersonalCommunicationDialogState extends State<UserPersonalCommunicat
           curve: Curves.easeOut,
         );
       }
-    });
-  }
-
-  void _toggleMinimize() {
-    setState(() {
-      _isMinimized = !_isMinimized;
     });
   }
 
@@ -280,7 +274,7 @@ class _UserPersonalCommunicationDialogState extends State<UserPersonalCommunicat
         itemCount: _messages.length,
         itemBuilder: (context, index) {
           final msg = _messages[index];
-          final isMine = msg.fromUserId == socketService.adminId;
+          final isMine = msg.fromUserId == socketService.userId;
           return _buildMessageBubble(msg, isMine);
         },
       ),

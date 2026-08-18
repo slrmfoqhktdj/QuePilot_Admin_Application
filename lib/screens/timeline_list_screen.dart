@@ -91,6 +91,8 @@ class _TimelineListScreenState extends State<TimelineListScreen> with TickerProv
   int _actionSeq = 0;
   int _lastUserPauseOrStopSeq = -1;
 
+  final double _syncDiff = 0.5; // 싱크 오차범위
+
   @override
   void initState()  {
     super.initState();
@@ -211,7 +213,11 @@ class _TimelineListScreenState extends State<TimelineListScreen> with TickerProv
         TimelineController? _controller = _selectProjectControllerById(data.projectId);
 
         if(_controller != null){
-          _controller.seekTo(data.currentTime);
+          // 500ms 이상 차이나면 서버 시간 적용, 그 이하면 건너뜀
+          final diff = (data.currentTime - _controller.currentTime).abs();
+          if(diff > _syncDiff){
+            _controller.seekTo(data.currentTime);
+          }
 
           // 사용자가 직접 조작한 직후에는 하트비트로 재생 상태를 변경하지 않음
           // (늦게 도착한 하트비트가 일시정지를 덮어쓰는 race condition 방지)

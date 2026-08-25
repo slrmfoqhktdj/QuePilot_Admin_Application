@@ -616,9 +616,9 @@ class _TimelineListScreenState extends State<TimelineListScreen> with TickerProv
 
   void _updateTracks(String projectId, Track track, {bool showSnackBar = true}){
     // 일반 사용자는 프로젝트 전체 트랙을 편집할 수 없고, 해당 트랙의 방에 대한 편집 권한이 있어야 함
-    if (!_isAdminUser && (track.room_id == projectId || !_myAuthRoomIds.contains(track.room_id))) return;
+    if (!_isAdminUser && (track.project_id != null || !_myAuthRoomIds.contains(track.room_id))) return;
 
-    socketService.updateTrack(projectId, track.id, track.name, track.room_id, track.cues,
+    socketService.updateTrack(projectId, track.id, track.name, track.room_id ?? track.project_id!, track.cues,
           (success, data) {
         if (mounted) {
           if (success) {
@@ -643,8 +643,8 @@ class _TimelineListScreenState extends State<TimelineListScreen> with TickerProv
 
   void _deleteTracks(String projectId, Track track) {
     // 일반 사용자는 프로젝트 전체 트랙을 삭제할 수 없고, 해당 트랙의 방에 대한 편집 권한이 있어야 함
-    if (!_isAdminUser && (track.room_id == projectId || !_myAuthRoomIds.contains(track.room_id))) return;
-    socketService.deleteTrack(projectId,track.room_id,track.id, (success,trackId) {
+    if (!_isAdminUser && (track.project_id != null || !_myAuthRoomIds.contains(track.room_id))) return;
+    socketService.deleteTrack(projectId, track.room_id ?? track.project_id!, track.id, (success,trackId) {
       if (mounted) {
         if (success && trackId != null) {
           setState(() {
@@ -1662,7 +1662,7 @@ class _TimelineListScreenState extends State<TimelineListScreen> with TickerProv
   String _getTrackNameForRoom(TimelineProject project, String roomId){
     final tracks = project.controller.timelineData?.tracks?? [];
     try{
-      final track = tracks.firstWhere((tracks) => tracks.room_id == roomId);
+      final track = tracks.firstWhere((t) => t.room_id == roomId || t.project_id == roomId);
       return track.name;
     }catch(e){
       return '트랙없음';

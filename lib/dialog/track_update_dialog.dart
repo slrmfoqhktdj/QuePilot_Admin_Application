@@ -128,9 +128,11 @@ class _UpdateTrackDialogState extends State<UpdateTrackDialog> {
     });
 
     Navigator.pop(context);
+    final isProjectTrack = _selectedRoomId == widget.projectId;
     widget.onTimelineUpdated(Track(
         id: widget.trackId,
-        room_id: _selectedRoomId!,
+        room_id: isProjectTrack ? null : _selectedRoomId,
+        project_id: isProjectTrack ? widget.projectId : null,
         name: _nameController.text.trim(),
         cues: _cues));
   }

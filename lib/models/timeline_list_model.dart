@@ -43,12 +43,18 @@ class TimelineProject {
 
   // 트랙이 없는 방 + "프로젝트 트랙" 가짜 방 (트랙 상태에서 즉시 계산 — 수동 동기화 불필요)
   List<Room> get roomsWithoutTrack {
-    final trackIds = (_controller?.timelineData?.tracks ?? const <Track>[])
-        .map((t) => t.room_id)
+    final trackRoomIds = (_controller?.timelineData?.tracks ?? const <Track>[])
+        .where((t) => t.room_id != null)
+        .map((t) => t.room_id!)
         .toSet();
+    final hasProjectTrack = (_controller?.timelineData?.tracks ?? const <Track>[])
+        .any((t) => t.project_id != null);
     final rooms = List<Room>.from(_roomsAll ?? const []);
     rooms.add(Room(id: id, name: '프로젝트 트랙', createdAt: createdAt));
-    return rooms.where((r) => !trackIds.contains(r.id)).toList();
+    return rooms.where((r) {
+      if (r.id == id) return !hasProjectTrack;
+      return !trackRoomIds.contains(r.id);
+    }).toList();
   }
 
   List<Room> get roomsAll => _roomsAll ?? [];

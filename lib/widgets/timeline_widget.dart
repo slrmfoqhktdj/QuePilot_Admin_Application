@@ -506,16 +506,15 @@ class _TimelineWidgetState extends State<TimelineWidget>
     if (!widget.canControl) return false;
     if (!widget.isAdminUser) {
       final projectId = widget.controller.timelineData?.projectId;
-      if (projectId != null && track.room_id == projectId) return false;
+      if (projectId != null && track.project_id == projectId) return false;
     }
     return true;
   }
 
   void _updateTracks(String projectId, track) {
-    final currentRoom = widget.roomsAll?.where((r) => r.id == track.room_id).firstOrNull
-        ?? (track.room_id == projectId
-            ? Room(id: projectId, name: '프로젝트 트랙', createdAt: DateTime.now())
-            : null);
+    final currentRoom = (track.room_id != null)
+        ? widget.roomsAll?.where((r) => r.id == track.room_id).firstOrNull
+        : Room(id: projectId, name: '프로젝트 트랙', createdAt: DateTime.now());
     final emptyRooms = widget.roomsWithoutTrack ?? [];
     final effectiveRoomList = <Room>[];
     if (currentRoom != null) {
@@ -536,7 +535,7 @@ class _TimelineWidgetState extends State<TimelineWidget>
           widget.onTrackUpdateRequest?.call(projectId, updatedTrack);
         },
 
-        roomId: track.room_id,
+        roomId: track.room_id ?? track.project_id,
         cueList: track.cues,
         trackName: track.name,
         trackId: track.id,
@@ -553,7 +552,7 @@ class _TimelineWidgetState extends State<TimelineWidget>
         onTrackDeleted: () {
           widget.onTrackDeleteRequest?.call(projectId, track);
         },
-        roomId: track.room_id,
+        roomId: track.room_id ?? track.project_id,
         trackName: track.name,
         trackId: track.id,
       ),
@@ -2193,7 +2192,7 @@ class _TimelineWidgetState extends State<TimelineWidget>
                                   child: Padding(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 8),
-                                    child: track.room_id == widget.controller.timelineData!.projectId
+                                    child: track.project_id == widget.controller.timelineData!.projectId
                                         ? Column(
                                             mainAxisAlignment: MainAxisAlignment.center,
                                             children: [

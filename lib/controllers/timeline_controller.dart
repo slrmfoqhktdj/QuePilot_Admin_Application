@@ -123,6 +123,7 @@ class TimelineController extends ChangeNotifier {
         id: track.id,
         name: track.name,
         room_id: track.room_id,
+        project_id: track.project_id,
         cues: updatedCues,
       );
 
@@ -159,6 +160,7 @@ class TimelineController extends ChangeNotifier {
           id: track.id,
           name: track.name,
           room_id: track.room_id,
+          project_id: track.project_id,
           cues: updatedCues,
         );
 
@@ -192,6 +194,7 @@ class TimelineController extends ChangeNotifier {
         id: track.id,
         name: track.name,
         room_id: track.room_id,
+        project_id: track.project_id,
         cues: updatedCues,
       );
 
